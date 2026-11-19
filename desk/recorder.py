@@ -234,6 +234,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         handlers=[logging.StreamHandler(),
                                   logging.FileHandler(ROOT / "logs" / "recorder.log")])
+    logging.getLogger("httpx").setLevel(logging.WARNING)   # one line per request is too noisy
     try:
         asyncio.run(Recorder(s).run(a.minutes))
     except KeyboardInterrupt:
