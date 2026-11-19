@@ -49,9 +49,9 @@ def check_filters(rug: dict | None, snap: Snap, s: Settings) -> str | None:
     if not rug["freeze_revoked"]:
         return "freeze not revoked"
     if rug["lp_locked_pct"] is None or rug["lp_locked_pct"] < s.min_lp_locked_pct:
-        return f"lp locked {rug['lp_locked_pct']}"
+        return f"lp locked {rug['lp_locked_pct']}%"
     if rug["top10_pct"] is None or rug["top10_pct"] > s.max_top10_pct:
-        return f"top10 {rug['top10_pct']}"
+        return f"top10 {rug['top10_pct']:.1f}%" if rug["top10_pct"] is not None else "top10 unknown"
     if rug["creator_pct"] is not None and rug["creator_pct"] > s.max_creator_pct:
         return f"creator holds {rug['creator_pct']:.1f}%"
     if s.skip_danger_risks and rug["danger_risks"]:
