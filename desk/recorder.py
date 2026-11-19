@@ -222,14 +222,36 @@ def status(s: Settings) -> None:
             print(f"{(r['ts'] - t0) / 60:>6.1f} {r['price'] or 0:>12.8f} {r['liq'] or 0:>10.0f} {r['mcap'] or 0:>10.0f}")
 
 
+def check(s: Settings, n: int = 12) -> None:
+    """Show how the filters read the latest RugCheck reports, to verify the field mapping."""
+    from .strategy import Snap, check_filters
+    con = db.connect(s.db_path)
+    rows = con.execute("""SELECT c.mint, c.symbol, r.raw_json FROM coins c JOIN rugcheck r USING(mint)
+                          ORDER BY c.migrated_at DESC LIMIT ?""", (n,)).fetchall()
+    print(f"{'symbol':<12}{'liq $':>9}{'mint':>6}{'frz':>5}{'lp%':>6}{'top10':>7}{'dev%':>6}  verdict")
+    for r in rows:
+        f = fields.parse_rugcheck(json.loads(r["raw_json"]))
+        snap = con.execute("SELECT price, liq FROM snapshots WHERE mint=? ORDER BY ts DESC LIMIT 1",
+                           (r["mint"],)).fetchone()
+        liq = (snap["liq"] if snap else 0) or 0
+        why = check_filters(f, Snap(0, 1, liq), s) or "PASS"
+        num = lambda x: "?" if x is None else f"{x:.0f}"  # noqa: E731
+        print(f"{(r['symbol'] or '?')[:11]:<12}{liq:>9,.0f}{'ok' if f['mint_revoked'] else 'NO':>6}"
+              f"{'ok' if f['freeze_revoked'] else 'NO':>5}{num(f['lp_locked_pct']):>6}{num(f['top10_pct']):>7}"
+              f"{num(f['creator_pct']):>6}  {why}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--minutes", type=float)
     ap.add_argument("--status", action="store_true")
+    ap.add_argument("--check", action="store_true", help="show how filters read RugCheck data")
     a = ap.parse_args()
     s = load_settings()
     if a.status:
         return status(s)
+    if a.check:
+        return check(s)
     (ROOT / "logs").mkdir(exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         handlers=[logging.StreamHandler(),
