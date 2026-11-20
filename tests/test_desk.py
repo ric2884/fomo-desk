@@ -140,8 +140,8 @@ def test_pick_pair_prefers_pumpswap():
 
 def test_rugcheck_parse_excludes_pool():
     rep = {"mintAuthority": None, "freezeAuthority": None, "creator": "DEV",
-           "markets": [{"pubkey": "POOL", "liquidityBAccount": "POOLVAULT", "lp": {"lpLockedPct": 100}}],
-           "topHolders": [{"address": "POOLVAULT", "owner": "POOL", "pct": 60},
+           "markets": [{"pubkey": "P" * 44, "liquidityBAccount": "V" * 43, "lp": {"lpLockedPct": 100}}],
+           "topHolders": [{"address": "V" * 43, "owner": "P" * 44, "pct": 60},
                           {"address": "a1", "owner": "DEV", "pct": 3},
                           {"address": "a2", "owner": "w2", "pct": 7}],
            "risks": [{"name": "Low liquidity", "level": "warn"}]}
@@ -202,3 +202,19 @@ def test_backtest_end_to_end(tmp_path):
     # a random-walk market has no edge: costs must make it lose
     assert m["net"] < 0
     assert backtest.verdict(m).startswith(("NO EDGE", "NOT ENOUGH"))
+
+
+def test_rugcheck_parse_nested_market_objects():
+    pool = "P" * 44
+    vault = "V" * 44
+    rep = {"mintAuthority": None, "freezeAuthority": None, "creator": "DEV",
+           "markets": [{"pubkey": pool, "liquidityA": {"address": vault, "amount": 5},
+                        "liquidityB": {"address": "W" * 44}, "lp": {"lpLockedPct": 100}}],
+           "topHolders": [{"address": vault, "owner": pool, "pct": 60},
+                          {"address": "a1", "owner": "DEV", "pct": 4},
+                          {"address": "a2", "owner": "w2", "pct": 9}],
+           "knownAccounts": {pool: {"name": "PumpSwap", "type": "AMM"}},
+           "risks": [{"name": "Mutable metadata", "level": "danger"}, "junk"]}
+    r = fields.parse_rugcheck(rep)
+    assert r["top10_pct"] == 13 and r["creator_pct"] == 4
+    assert r["danger_risks"] == ["Mutable metadata"]

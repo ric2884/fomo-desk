@@ -47,6 +47,17 @@ def parse_pair(pair: dict) -> dict:
     }
 
 
+def _addresses(v: Any) -> set[str]:
+    """Solana addresses inside a value that may be a string, a dict, or a list (API shapes vary)."""
+    if isinstance(v, str):
+        return {v} if 32 <= len(v) <= 44 else set()
+    if isinstance(v, dict):
+        return set().union(*(_addresses(x) for x in v.values() if isinstance(x, str)), set())
+    if isinstance(v, list):
+        return set().union(*(_addresses(x) for x in v), set())
+    return set()
+
+
 def parse_rugcheck(r: dict) -> dict:
     """RugCheck /v1/tokens/{mint}/report -> the facts our filters use."""
     markets = r.get("markets") or []
@@ -54,13 +65,12 @@ def parse_rugcheck(r: dict) -> dict:
     lp_locked = []
     for m in markets:
         for k in ("pubkey", "liquidityAAccount", "liquidityBAccount", "liquidityA", "liquidityB"):
-            if m.get(k):
-                pool_accounts.add(m[k])
+            pool_accounts |= _addresses(m.get(k))
         lp = m.get("lp") or {}
         if lp.get("lpLockedPct") is not None:
             lp_locked.append(_f(lp["lpLockedPct"]))
     for addr, info in (r.get("knownAccounts") or {}).items():
-        if (info or {}).get("type") in ("AMM", "LOCKER"):
+        if isinstance(info, dict) and info.get("type") in ("AMM", "LOCKER"):
             pool_accounts.add(addr)
 
     holders = r.get("topHolders")
@@ -74,7 +84,7 @@ def parse_rugcheck(r: dict) -> dict:
         if creator:
             creator_pct = sum(_f(h.get("pct")) or 0 for h in real if h.get("owner") == creator)
 
-    risks = r.get("risks") or []
+    risks = [x for x in r.get("risks") or [] if isinstance(x, dict)]
     return {
         "mint_revoked": r.get("mintAuthority") in (None, ""),
         "freeze_revoked": r.get("freezeAuthority") in (None, ""),

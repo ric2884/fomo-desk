@@ -241,17 +241,45 @@ def check(s: Settings, n: int = 12) -> None:
               f"{num(f['creator_pct']):>6}  {why}")
 
 
+def rugshape(s: Settings) -> None:
+    """Print the shape of the newest RugCheck report (keys, types, short values)."""
+    con = db.connect(s.db_path)
+    row = con.execute("SELECT raw_json FROM rugcheck ORDER BY ts DESC LIMIT 1").fetchone()
+    if not row:
+        return print("no rugcheck reports yet")
+    r = json.loads(row[0])
+
+    def short(v):
+        if isinstance(v, dict):
+            return "{" + ", ".join(list(v)[:8]) + ("…" if len(v) > 8 else "") + "}"
+        if isinstance(v, list):
+            return f"list[{len(v)}]"
+        return repr(v)[:30]
+    print("TOP LEVEL:", ", ".join(f"{k}:{type(v).__name__}" for k, v in r.items()))
+    for name in ("markets", "topHolders", "risks"):
+        items = r.get(name) or []
+        if items and isinstance(items[0], dict):
+            print(f"\n{name}[0]:")
+            for k, v in items[0].items():
+                print(f"  {k:<22} {short(v)}")
+    for k in ("mintAuthority", "freezeAuthority", "creator", "rugged", "totalHolders"):
+        print(f"{k:<16} {short(r.get(k))}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--minutes", type=float)
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--check", action="store_true", help="show how filters read RugCheck data")
+    ap.add_argument("--rugshape", action="store_true", help="print the structure of one RugCheck report")
     a = ap.parse_args()
     s = load_settings()
     if a.status:
         return status(s)
     if a.check:
         return check(s)
+    if a.rugshape:
+        return rugshape(s)
     (ROOT / "logs").mkdir(exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         handlers=[logging.StreamHandler(),
