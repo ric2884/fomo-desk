@@ -8,7 +8,7 @@ A small, honest test of one memecoin strategy: buy the first dip of freshly grad
 | 1 | Recorder: saves graduations + price paths (no account, no money) | ✅ built |
 | 2 | Cost model: FOMO fees, slippage, 5 s delay, failed buys | ✅ built |
 | 3 | Backtest: train on first 70% of days, test on the rest | ✅ built |
-| 4 | Live paper trading + Telegram + the gate to real money | ⏳ after ≥ 7 days of data |
+| 4 | Live paper trading + Telegram + the gate to real money | ✅ built |
 | 5–6 | FOMO connection (read-only first), then live with $5 tickets | ⏳ only if the gate passes |
 
 ## Run it on your computer
@@ -53,6 +53,29 @@ python -m desk.backtest --tune
 ```
 
 Writes `reports/report.md` and `reports/equity.svg`. Send me the report.
+
+## Paper trading (STEP 4)
+
+Fake $100, real prices, exactly the same rules as the backtest. The **recorder must keep running** in its own tab.
+
+**Telegram (once):** in Telegram, message **@BotFather** → `/newbot` → pick a name → copy the token it gives you.
+In the bot folder run `notepad .env`, click **Yes** to create the file, type one line and save:
+
+```
+TELEGRAM_BOT_TOKEN=paste-your-token-here
+```
+
+**Start it** (in a second tab, same folder):
+
+```bash
+py -m desk.paper
+```
+
+Then open your new bot in Telegram and send `/start` — you become its owner. Commands: `/status` `/report` `/pause` `/resume`.
+You get a message for every buy and sell, and a daily report at 08:00 with the **gate to real money**:
+≥ 14 days · ≥ 150 trades · profit after costs · profit factor ≥ 1.3 · still positive without the 3 best trades · max drawdown ≤ 30%.
+
+Other commands: `py -m desk.paper --report` (same report in the terminal) · `py -m desk.paper --reset` (start over at $100).
 
 ## Money limits (in code: `desk/config.py`)
 

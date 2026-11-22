@@ -218,3 +218,60 @@ def test_rugcheck_parse_nested_market_objects():
     r = fields.parse_rugcheck(rep)
     assert r["top10_pct"] == 13 and r["creator_pct"] == 4
     assert r["danger_risks"] == ["Mutable metadata"]
+
+
+# ---------- paper trading ----------
+from desk import paper as paper_mod  # noqa: E402
+
+
+def paper_settings(tmp_path, **kw):
+    base = dict(db_path=str(tmp_path / "p.db"), fail_rate=0.0, max_open=99, max_trades_day=999,
+                daily_loss_limit=1e9, weekly_loss_limit=1e9, kill_switch_balance=-1e9,
+                max_exposure_frac=1.0, bankroll_usd=10_000, time_stop_s=900)
+    base.update(kw)
+    return with_overrides(Settings(), **base)
+
+
+def test_paper_matches_backtest(tmp_path):
+    """Paper trading, fed the data live, must make exactly the trades the backtest makes."""
+    s = paper_settings(tmp_path)
+    synth_db(s.db_path, n=60, days=0.15, seed=11)
+    coins = backtest.load_coins(s)
+    expected = {}
+    for c in coins:
+        t, _ = simulate(c.mint, c.symbol, c.t0, c.snaps, c.rug, s, random.Random(0))
+        if t:
+            expected[c.mint] = round(t.pnl, 6)
+    assert len(expected) >= 3, "synthetic market should produce some trades"
+
+    desk = paper_mod.PaperDesk(s, rng=random.Random(0))
+    start = min(c.t0 for c in coins)
+    end = max(c.t0 for c in coins) + 3700
+    now = start
+    while now < end:
+        desk.step(now)
+        now += 5
+    got = {t.mint: round(t.pnl, 6) for t in paper_mod.load_trades(desk.con)}
+    assert got == expected
+
+
+def test_paper_restart_restores_money(tmp_path):
+    s = paper_settings(tmp_path, bankroll_usd=100, kill_switch_balance=60)
+    synth_db(s.db_path, n=40, days=0.1, seed=5)
+    coins = backtest.load_coins(s)
+    desk = paper_mod.PaperDesk(s, rng=random.Random(0))
+    now, end = min(c.t0 for c in coins), max(c.t0 for c in coins) + 1800
+    while now < end:
+        desk.step(now)
+        now += 5
+    again = paper_mod.PaperDesk(s)
+    assert again.ledger.cash == pytest.approx(desk.ledger.cash)
+    assert set(again.positions) == set(desk.positions)
+
+
+def test_gate_report(tmp_path):
+    s = paper_settings(tmp_path)
+    db.connect(s.db_path)
+    desk = paper_mod.PaperDesk(s)
+    text = paper_mod.report_text(desk, 1_700_000_000)
+    assert "Gate to real money" in text and "Not yet" in text

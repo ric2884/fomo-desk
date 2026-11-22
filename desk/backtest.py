@@ -12,11 +12,11 @@ import json
 import random
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import db, fields
 from .config import ROOT, Settings, load_settings, with_overrides
+from .ledger import Ledger, day_of
 from .strategy import Snap, Trade, simulate
 
 GRID = {"dip_min": [0.10, 0.15, 0.20], "stop": [0.15, 0.20, 0.25], "trail": [0.20, 0.30, 0.40]}
@@ -43,15 +43,6 @@ def load_coins(s: Settings) -> list[Coin]:
             for r in con.execute("SELECT * FROM coins ORDER BY migrated_at")]
 
 
-def day_of(ts: float) -> str:
-    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
-
-
-def week_of(ts: float) -> str:
-    y, w, _ = datetime.fromtimestamp(ts, timezone.utc).isocalendar()
-    return f"{y}-W{w:02d}"
-
-
 def run(coins: list[Coin], s: Settings) -> dict:
     """Simulate every coin, then apply the money limits in time order (STEP 7)."""
     rng = random.Random(s.seed)
@@ -65,55 +56,29 @@ def run(coins: list[Coin], s: Settings) -> dict:
             skips[why.split(" ")[0] if why.startswith(("top10", "lp", "liquidity", "creator", "danger")) else why] += 1
     cands.sort(key=lambda t: t.entry_ts)
 
-    cash = s.bankroll_usd
+    led = Ledger(s)
     open_: list[Trade] = []
     taken: list[Trade] = []
-    day_pnl = defaultdict(float)
-    week_pnl = defaultdict(float)
-    day_count = Counter()
     blocked = Counter()
-    killed = False
-    equity = [(cands[0].entry_ts if cands else 0, cash)]
 
     def close_until(ts: float) -> None:
-        nonlocal cash
         for t in sorted([t for t in open_ if t.exit_ts <= ts], key=lambda t: t.exit_ts):
             open_.remove(t)
-            cash += t.proceeds_usd
-            day_pnl[day_of(t.exit_ts)] += t.pnl
-            week_pnl[week_of(t.exit_ts)] += t.pnl
-            equity.append((t.exit_ts, cash + sum(o.cost_usd for o in open_)))
+            led.on_close(t.mint, t.exit_ts, t.proceeds_usd)
 
     for t in cands:
         close_until(t.entry_ts)
-        d, w = day_of(t.entry_ts), week_of(t.entry_ts)
-        if killed or cash + sum(o.cost_usd for o in open_) <= s.kill_switch_balance:
-            killed = True
-            blocked["kill switch"] += 1
+        why = led.block_reason(t.entry_ts, t.cost_usd)
+        if why:
+            blocked[why] += 1
             continue
-        if day_pnl[d] <= -s.daily_loss_limit:
-            blocked["daily loss limit"] += 1
-            continue
-        if week_pnl[w] <= -s.weekly_loss_limit:
-            blocked["weekly loss limit"] += 1
-            continue
-        if len(open_) >= s.max_open:
-            blocked["max open positions"] += 1
-            continue
-        if day_count[d] >= s.max_trades_day:
-            blocked["max trades/day"] += 1
-            continue
-        exposure = sum(o.cost_usd for o in open_) + t.cost_usd
-        if cash < t.cost_usd or exposure > s.max_exposure_frac * (cash + exposure - t.cost_usd):
-            blocked["not enough cash / exposure"] += 1
-            continue
-        cash -= t.cost_usd
+        led.on_open(t.mint, t.entry_ts, t.cost_usd)
         open_.append(t)
         taken.append(t)
-        day_count[d] += 1
     close_until(float("inf"))
+    equity = led.equity_curve or [(cands[0].entry_ts if cands else 0, s.bankroll_usd)]
     return {"trades": taken, "skips": skips, "blocked": blocked, "equity": equity,
-            "final": cash, "killed": killed}
+            "final": led.cash, "killed": led.killed}
 
 
 def metrics(res: dict, s: Settings) -> dict:

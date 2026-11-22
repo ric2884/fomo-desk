@@ -61,19 +61,25 @@ def check_filters(rug: dict | None, snap: Snap, s: Settings) -> str | None:
     return None
 
 
+def interp(a: Snap, b: Snap, ts: float) -> Snap:
+    """Price/liquidity at time ts between snapshots a and b (a.ts <= ts <= b.ts)."""
+    if b.ts == ts or b.ts <= a.ts:
+        return b
+    if b.liq < 1 or b.price <= 0:          # pool vanished — no interpolation into a rug
+        return b
+    w = (ts - a.ts) / (b.ts - a.ts)
+    return Snap(ts, a.price + (b.price - a.price) * w, a.liq + (b.liq - a.liq) * w)
+
+
 def price_at(snaps: list[Snap], ts: float) -> Snap | None:
     """Linear interpolation of the path at time ts (None if past the end of the data)."""
     tss = [x.ts for x in snaps]
     i = bisect_left(tss, ts)
     if i >= len(snaps):
         return None
-    if i == 0 or snaps[i].ts == ts:
+    if i == 0:
         return snaps[i]
-    a, b = snaps[i - 1], snaps[i]
-    w = (ts - a.ts) / (b.ts - a.ts)
-    if b.liq < 1 or b.price <= 0:          # pool vanished — no interpolation into a rug
-        return b
-    return Snap(ts, a.price + (b.price - a.price) * w, a.liq + (b.liq - a.liq) * w)
+    return interp(snaps[i - 1], snaps[i], ts)
 
 
 def find_entry(snaps: list[Snap], t0: float, s: Settings) -> int | None:
@@ -96,6 +102,115 @@ def find_entry(snaps: list[Snap], t0: float, s: Settings) -> int | None:
     return None
 
 
+class Position:
+    """One open position. Shared by the backtest and paper trading so both follow identical rules.
+    Feed it snapshots in time order with update(); decisions execute exec_delay_s later."""
+
+    def __init__(self, mint: str, symbol: str, t0: float, fill: Snap, s: Settings):
+        self.s, self.t0 = s, t0
+        ticket = s.ticket_usd
+        buy_slip = slippage(ticket, fill.liq, "buy", fill.ts - t0, s)
+        entry_px = fill.price * (1 + buy_slip)              # effective price paid
+        self.tokens = (ticket - fomo_fee(ticket)) / entry_px
+        self.fill_price = fill.price
+        self.fill_ts = fill.ts
+        self.peak = fill.price
+        self.tp_done = False
+        self.prev_liq = fill.liq
+        self.last = fill
+        self.pending: tuple[str, float, float] | None = None   # (why, share of tokens, due ts)
+        self.closed = False
+        self.trade = Trade(mint, symbol, fill.ts, fill.ts, entry_px, ticket, 0.0, "")
+
+    def _sell(self, n_tokens: float, at: Snap, why: str) -> None:
+        t, s = self.trade, self.s
+        self.tokens -= n_tokens
+        t.exit_ts = at.ts
+        if at.liq < s.rug_liq_usd or at.price <= 0:
+            t.legs.append((at.ts, why + " (rugged)", 0.0))
+            return
+        gross = n_tokens * at.price
+        gross *= 1 - slippage(gross, at.liq, "sell", at.ts - self.t0, s)
+        net = max(0.0, gross - fomo_fee(gross))
+        t.proceeds_usd += net
+        t.legs.append((at.ts, why, net))
+
+    def _execute(self, why: str, share: float, at: Snap) -> list[str]:
+        self._sell(self.tokens * share, at, why)
+        if share >= 1:
+            self.closed = True
+            self.trade.exit_reason = why
+            return [why]
+        return [why]
+
+    def update(self, x: Snap) -> list[str]:
+        """Process the next snapshot. Returns the names of any sells executed."""
+        if self.closed or x.ts <= self.last.ts:
+            return []
+        s, events = self.s, []
+        if self.pending and x.ts >= self.pending[2]:
+            why, share, due = self.pending
+            self.pending = None
+            events += self._execute(why, share, interp(self.last, x, due))
+            if self.closed:
+                self.last = x
+                return events
+        self.peak = max(self.peak, x.price)
+        why = None
+        if x.liq < s.rug_liq_usd or x.price <= 0:
+            why = "rug"
+        elif x.liq < self.prev_liq * (1 - s.liq_pull_drop):
+            why = "liquidity pulled"
+        elif x.price <= self.fill_price * (1 - s.stop):
+            why = "stop"
+        elif self.tp_done and x.price <= self.peak * (1 - s.trail):
+            why = "trail"
+        elif x.ts - self.fill_ts >= s.time_stop_s:
+            why = "time"
+        elif not self.tp_done and x.price >= self.fill_price * (1 + s.tp):
+            self.tp_done = True
+            self.pending = ("take profit", s.tp_sell_frac, x.ts + s.exec_delay_s)
+        self.prev_liq = x.liq
+        self.last = x
+        if why == "rug":
+            self.pending = None
+            events += self._execute("rug", 1.0, x)
+        elif why:
+            self.pending = (why, 1.0, x.ts + s.exec_delay_s)
+        return events
+
+    def finish(self, why: str, at: Snap | None = None) -> list[str]:
+        """Force-close (data ended, or no data for too long)."""
+        if self.closed:
+            return []
+        at = at or self.last
+        events = []
+        if self.pending:
+            pw, share, _ = self.pending
+            self.pending = None
+            events += self._execute(pw, share, at)
+            if self.closed:
+                return events
+        return events + self._execute(why, 1.0, at)
+
+    # --- persistence for paper trading ---
+    def to_dict(self) -> dict:
+        d = {k: v for k, v in self.__dict__.items() if k not in ("s", "trade", "last")}
+        d["last"] = [self.last.ts, self.last.price, self.last.liq]
+        d["trade"] = self.trade.__dict__
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict, s: Settings) -> "Position":
+        p = cls.__new__(cls)
+        p.__dict__.update({k: v for k, v in d.items() if k not in ("last", "trade")})
+        p.s = s
+        p.last = Snap(*d["last"])
+        p.pending = tuple(d["pending"]) if d["pending"] else None
+        p.trade = Trade(**d["trade"])
+        return p
+
+
 def simulate(mint: str, symbol: str, t0: float, snaps: list[Snap], rug: dict | None,
              s: Settings, rng: random.Random) -> tuple[Trade | None, str]:
     snaps = [x for x in snaps if x.price is not None and x.liq is not None]
@@ -109,58 +224,14 @@ def simulate(mint: str, symbol: str, t0: float, snaps: list[Snap], rug: dict | N
         return None, reason
     if rng.random() < s.fail_rate:
         return None, "buy failed (simulated)"
-
     fill = price_at(snaps, snaps[i].ts + s.exec_delay_s)
     if fill is None or fill.price <= 0 or fill.liq < s.rug_liq_usd:
         return None, "no fill"
-    ticket = s.ticket_usd
-    buy_slip = slippage(ticket, fill.liq, "buy", fill.ts - t0, s)
-    entry_px = fill.price * (1 + buy_slip)                 # effective price paid
-    tokens = (ticket - fomo_fee(ticket)) / entry_px
-    t = Trade(mint, symbol, fill.ts, fill.ts, entry_px, ticket, 0.0, "")
-
-    def sell(n_tokens: float, at: Snap, why: str) -> None:
-        if at.liq < s.rug_liq_usd or at.price <= 0:
-            t.legs.append((at.ts, why + " (rugged)", 0.0))
-            return
-        gross = n_tokens * at.price
-        gross *= 1 - slippage(gross, at.liq, "sell", at.ts - t0, s)
-        net = max(0.0, gross - fomo_fee(gross))
-        t.proceeds_usd += net
-        t.legs.append((at.ts, why, net))
-        t.exit_ts = at.ts
-
-    peak = fill.price
-    tp_done = False
-    prev_liq = fill.liq
-    later = [x for x in snaps if x.ts > fill.ts]
-    for x in later:
-        peak = max(peak, x.price)
-        why = None
-        if x.liq < s.rug_liq_usd or x.price <= 0:
-            why = "rug"
-        elif x.liq < prev_liq * (1 - s.liq_pull_drop):
-            why = "liquidity pulled"
-        elif x.price <= fill.price * (1 - s.stop):
-            why = "stop"
-        elif tp_done and x.price <= peak * (1 - s.trail):
-            why = "trail"
-        elif x.ts - fill.ts >= s.time_stop_s:
-            why = "time"
-        elif not tp_done and x.price >= fill.price * (1 + s.tp):
-            ex = price_at(snaps, x.ts + s.exec_delay_s) or x
-            part = tokens * s.tp_sell_frac
-            sell(part, ex, "take profit")
-            tokens -= part
-            tp_done = True
-        prev_liq = x.liq
-        if why:
-            ex = x if why == "rug" else (price_at(snaps, x.ts + s.exec_delay_s) or x)
-            sell(tokens, ex, why)
-            t.exit_reason = why
-            t.exit_ts = ex.ts
-            return t, "traded"
-    # recording ended with the position still open: close at the last known price
-    sell(tokens, later[-1] if later else fill, "data end")
-    t.exit_reason = "data end"
-    return t, "traded"
+    pos = Position(mint, symbol, t0, fill, s)
+    for x in snaps:
+        if x.ts > fill.ts:
+            pos.update(x)
+            if pos.closed:
+                return pos.trade, "traded"
+    pos.finish("data end")
+    return pos.trade, "traded"
