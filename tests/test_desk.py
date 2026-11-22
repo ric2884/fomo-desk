@@ -275,3 +275,13 @@ def test_gate_report(tmp_path):
     desk = paper_mod.PaperDesk(s)
     text = paper_mod.report_text(desk, 1_700_000_000)
     assert "Gate to real money" in text and "Not yet" in text
+
+
+def test_summary_is_short(tmp_path):
+    from desk import summary
+    s = with_overrides(Settings(), db_path=str(tmp_path / "s.db"))
+    synth_db(s.db_path, n=200, days=8)
+    lines = summary.backtest_summary(s)
+    assert 3 <= len(lines) <= 20
+    assert lines[0].startswith("BACKTEST") and "win rate" in lines[1]
+    assert len(summary.paper_summary(s)) <= 20
