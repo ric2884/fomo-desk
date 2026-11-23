@@ -107,6 +107,7 @@ class PaperDesk:
             c = self.coins[m]
             if now - c.t0 > self.s.track_window_s and m not in self.positions:
                 del self.coins[m]
+                new.pop(m, None)                 # its last snapshot may have arrived in this same batch
             elif c.rug is None:
                 row = self.con.execute("SELECT raw_json FROM rugcheck WHERE mint=? ORDER BY ts LIMIT 1", (m,)).fetchone()
                 if row:
@@ -197,13 +198,19 @@ class PaperDesk:
         msgs: list[str] = []
         new = self._load(now)
         for mint, snaps in new.items():
-            c = self.coins[mint]
-            for x in snaps:
-                c.snaps.append(x)
-                if mint in self.positions:
-                    msgs += self._step_position(self.positions[mint], x)
-                else:
-                    msgs += self._on_entry_snapshot(c, x, now)
+            c = self.coins.get(mint)
+            if c is None:
+                continue
+            try:                                 # one bad coin must never block the others
+                for x in snaps:
+                    c.snaps.append(x)
+                    if mint in self.positions:
+                        msgs += self._step_position(self.positions[mint], x)
+                    else:
+                        msgs += self._on_entry_snapshot(c, x, now)
+            except Exception as e:  # noqa: BLE001
+                log.exception("coin %s failed: %r", mint, e)
+                c.decided = True                 # stop trying to enter this coin
         for mint, p in list(self.positions.items()):                 # positions whose price feed died
             if now - p.last.ts > NO_DATA_CLOSE_S:
                 p.finish("no price data (assumed rug)", Snap(now, 0.0, 0.0))

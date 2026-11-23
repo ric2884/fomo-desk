@@ -285,3 +285,23 @@ def test_summary_is_short(tmp_path):
     assert 3 <= len(lines) <= 20
     assert lines[0].startswith("BACKTEST") and "win rate" in lines[1]
     assert len(summary.paper_summary(s)) <= 20
+
+
+def test_paper_coin_aging_out_with_last_snapshot(tmp_path):
+    """Regression: a coin past the 4h window whose last snapshot lands in the same batch caused KeyError."""
+    s = paper_settings(tmp_path)
+    con = db.connect(s.db_path)
+    t0 = 1_700_000_000.0
+    con.execute("INSERT INTO coins VALUES ('OLD','n','OLD','p',?, '')", (t0,))
+    con.execute("INSERT INTO coins VALUES ('NEW','n','NEW','p',?, '')", (t0 + s.track_window_s - 100,))
+    con.execute("INSERT INTO snapshots VALUES ('OLD',?,1,50000,0,0,0,0)", (t0 + 60,))
+    con.commit()
+    desk = paper_mod.PaperDesk(s)
+    desk.step(t0 + 70)
+    late = t0 + s.track_window_s + 5
+    con.execute("INSERT INTO snapshots VALUES ('OLD',?,1,50000,0,0,0,0)", (late,))
+    con.execute("INSERT INTO snapshots VALUES ('NEW',?,1,50000,0,0,0,0)", (late,))
+    con.commit()
+    desk.step(late + 1)                       # must not raise
+    assert "OLD" not in desk.coins
+    assert desk.coins["NEW"].snaps[-1].ts == late   # other coins still get their snapshot
