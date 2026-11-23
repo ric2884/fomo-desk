@@ -12,8 +12,11 @@ import json
 import logging
 import random
 import time
+import traceback
 from collections import Counter, defaultdict
 from datetime import datetime
+
+from pathlib import Path
 
 from . import db, fields
 from .config import ROOT, Settings, load_settings
@@ -21,6 +24,7 @@ from .ledger import Ledger
 from .strategy import Position, Snap, Trade, check_filters, find_entry, interp
 
 log = logging.getLogger("paper")
+VERSION = "2026-11-23b"   # shown in Telegram so we can tell which code is running
 STALE_SIGNAL_S = 30       # a dip signal older than this (e.g. after a restart) is not traded
 NO_DATA_CLOSE_S = 300     # an open position with no price for 5 min is assumed rugged
 
@@ -280,7 +284,7 @@ async def run(s: Settings) -> None:
     desk.notify = outbox.append
     if not tg.token:
         print("No TELEGRAM_BOT_TOKEN in .env — messages will only be printed here.")
-    await tg.send("🟢 PAPER desk started. " + status_text(desk))
+    await tg.send(f"🟢 PAPER desk started (v{VERSION}). " + status_text(desk))
     offline_warned = False
 
     async def commands():
@@ -307,7 +311,8 @@ async def run(s: Settings) -> None:
                 desk.step(now)
             except Exception as e:  # noqa: BLE001 — log and keep going; never die silently
                 log.exception("step failed: %r", e)
-                outbox.append(f"⚠️ Desk error: {e!r}")
+                tb = traceback.extract_tb(e.__traceback__)[-1]
+                outbox.append(f"⚠️ Desk error: {e!r} at {Path(tb.filename).name}:{tb.lineno} (v{VERSION})")
             while outbox:
                 await tg.send(outbox.pop(0))
             hb = desk.con.execute("SELECT ts FROM heartbeats WHERE name='recorder'").fetchone()
