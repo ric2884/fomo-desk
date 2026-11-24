@@ -43,7 +43,7 @@ Verified: prices/liquidity/market cap printed correctly by `--status`.
 Extra fields read by the 8-layer audit (`desk/audit.py`, audit-upgrade branch):
 - `topHolders[].insider` (bool) — verified present.
 - `markets[].liquidityAAccount.delegate` — verified present (null when no delegate).
-- `graphInsidersDetected` (int), `insiderNetworks` ([{"size": n, …}]) — **expected, not yet seen**. Missing → layer "unknown".
+- `graphInsidersDetected` (int), `insiderNetworks` ([{"size": n, …}]) — verified present indirectly (Nov 24: the linked-wallets layer failed 22 coins on real data, which needs these fields). Missing → layer "unknown".
 
 Gotchas (learned the hard way):
 - `liquidityA/B` are **address strings**, but `liquidityAAccount/BAccount` are **objects** — the first `--check` crashed on this.
