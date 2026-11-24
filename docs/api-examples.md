@@ -40,6 +40,11 @@ Verified: prices/liquidity/market cap printed correctly by `--status`.
  "risks": [{"name": "Creator history of rugged tokens", "value": "", "description": "…",
             "score": 74400, "level": "danger"}]}
 ```
+Extra fields read by the 8-layer audit (`desk/audit.py`, audit-upgrade branch):
+- `topHolders[].insider` (bool) — verified present.
+- `markets[].liquidityAAccount.delegate` — verified present (null when no delegate).
+- `graphInsidersDetected` (int), `insiderNetworks` ([{"size": n, …}]) — **expected, not yet seen**. Missing → layer "unknown".
+
 Gotchas (learned the hard way):
 - `liquidityA/B` are **address strings**, but `liquidityAAccount/BAccount` are **objects** — the first `--check` crashed on this.
 - The biggest "holder" is usually the **pool vault** (= `liquidityA`). It must be excluded from top-10 or every coin looks like a whale owns 76%.
