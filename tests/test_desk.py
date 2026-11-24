@@ -305,3 +305,9 @@ def test_paper_coin_aging_out_with_last_snapshot(tmp_path):
     desk.step(late + 1)                       # must not raise
     assert "OLD" not in desk.coins
     assert desk.coins["NEW"].snaps[-1].ts == late   # other coins still get their snapshot
+
+
+def test_rugcheck_parse_malformed_report_does_not_crash():
+    r = fields.parse_rugcheck({"markets": "x", "topHolders": [1, None, {"address": "a", "owner": "b", "pct": 4}],
+                               "knownAccounts": [], "risks": ["junk"]})
+    assert r["top10_pct"] == 4 and r["lp_locked_pct"] is None
