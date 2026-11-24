@@ -60,7 +60,7 @@ def _addresses(v: Any) -> set[str]:
 
 def parse_rugcheck(r: dict) -> dict:
     """RugCheck /v1/tokens/{mint}/report -> the facts our filters use."""
-    markets = r.get("markets") or []
+    markets = [m for m in r.get("markets") or [] if isinstance(m, dict)] if isinstance(r.get("markets"), list) else []
     pool_accounts: set[str] = set()
     lp_locked = []
     for m in markets:
@@ -69,11 +69,13 @@ def parse_rugcheck(r: dict) -> dict:
         lp = m.get("lp") or {}
         if lp.get("lpLockedPct") is not None:
             lp_locked.append(_f(lp["lpLockedPct"]))
-    for addr, info in (r.get("knownAccounts") or {}).items():
+    known = r.get("knownAccounts")
+    for addr, info in (known if isinstance(known, dict) else {}).items():
         if isinstance(info, dict) and info.get("type") in ("AMM", "LOCKER"):
             pool_accounts.add(addr)
 
     holders = r.get("topHolders")
+    holders = [h for h in holders if isinstance(h, dict)] if isinstance(holders, list) else None
     top10 = None
     creator_pct = None
     creator = r.get("creator")
