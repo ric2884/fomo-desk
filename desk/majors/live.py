@@ -18,7 +18,7 @@ from ..config import ROOT, Settings, load_settings
 from . import data
 from .config import MajorsSettings
 from .engine import Engine
-from .strategies import make
+from .strategies import make_all
 
 log = logging.getLogger("majors")
 HOUR = 3600
@@ -49,7 +49,7 @@ class LiveMajors:
 
     def _strats(self):
         c = self.choice
-        return {sym: make(c["family"], tuple(c["params"]), c["allow_short"]) for sym in self.ms.symbols}
+        return make_all(c["family"], tuple(c["params"]), c["allow_short"], self.ms.symbols)
 
     def _funding(self):
         out = {s: {} for s in self.ms.symbols}

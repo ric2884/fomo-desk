@@ -21,7 +21,7 @@ from ..config import Settings, load_settings
 from . import data
 from .config import MajorsSettings
 from .engine import Engine
-from .strategies import FAMILIES, combos, make
+from .strategies import FAMILIES, combos, make_all
 
 DAY = 86400
 
@@ -43,7 +43,7 @@ def run(ts_list, bars, ms, s, funding, schedule, start_ts, end_ts, limits=True) 
         while k + 1 < len(sched) and sched[k + 1][0] <= ts:
             k += 1
             _, fam, params, sh, atr_k = sched[k]
-            eng.strats = {sym: make(fam, params, sh) for sym in ms.symbols}
+            eng.strats = make_all(fam, params, sh, ms.symbols)
             eng.atr_k = atr_k
             for j in range(max(0, i - ms.warm_bars), i):                   # warm-up: indicators only
                 for sym, b in bars[ts_list[j]].items():
@@ -77,6 +77,21 @@ def folds(ms: MajorsSettings, last_ts: int) -> list[int]:
     return out
 
 
+def weekly(days) -> list[float]:
+    """Week-by-week % change of the whole account (Mon→Mon), from the daily (day, start, end, hit) records."""
+    out, cur, start, end = [], None, None, None
+    for d, st, e, _ in days:
+        w = datetime.strptime(d, "%Y-%m-%d").isocalendar()[:2]
+        if w != cur:
+            if cur is not None and start:
+                out.append(end / start - 1)
+            cur, start = w, st
+        end = e
+    if cur is not None and start:
+        out.append(end / start - 1)
+    return out
+
+
 def stats(eng: Engine, s: Settings, start_ts: int, end_ts: int) -> dict:
     total = eng.total
     years = max((end_ts - start_ts) / (365 * DAY), 1e-9)
@@ -88,7 +103,10 @@ def stats(eng: Engine, s: Settings, start_ts: int, end_ts: int) -> dict:
     hit = sum(1 for d in eng.days if d[3])
     avg = sum((e / st - 1) for _, st, e, _ in eng.days if st > 0) / n
     cagr = (total / s.bankroll_usd) ** (1 / years) - 1 if total > 0 else -1.0
+    weeks = weekly(eng.days)
     return {"end": total, "cagr": cagr, "mdd": mdd, "hit": hit, "days": n, "avg": avg,
+            "avg_week": sum(weeks) / len(weeks) if weeks else 0.0, "weeks_5": sum(1 for w in weeks if w >= 0.05),
+            "n_weeks": len(weeks),
             "banked": eng.banked, "killed": eng.killed, "fees": eng.fees, "funding": eng.funding_paid,
             "trades": eng.trades, "sharpe": sharpe([r for _, r in daily_returns(eng)])}
 
@@ -170,8 +188,10 @@ def report(wf: dict, ms: MajorsSettings, funding_real: bool) -> list[str]:
     out.append(f"vs BTC buy-and-hold: {b['cagr'] - h['cagr']:+.1%} per year, drawdown {b['mdd']:.0%} vs {h['mdd']:.0%}")
     out.append(f"Costs for best: fees ${b['fees']:.2f}, funding ${b['funding']:+.2f}, {b['trades']} positions opened")
     hit_rate = b["hit"] / max(1, b["days"])
-    out.append(f"+1%/day target: reached on {hit_rate:.0%} of days · average day {b['avg']:+.2%} "
-               f"(1%/day would be {(1.01 ** 365 - 1):.0%}/yr)")
+    out.append(f"TARGET 1%/day: reached on {hit_rate:.0%} of days · average day {b['avg']:+.2%}")
+    top = max(wf["results"].values(), key=lambda r: r["avg_week"])
+    out.append(f"TARGET 5–7%/week: best average week {top['avg_week']:+.2%} · weeks ≥ +5%: "
+               f"{top['weeks_5']} of {top['n_weeks']}")
     beat = b["cagr"] > h["cagr"]
     out.append("VERDICT: " + ("best strategy BEAT buy-and-hold on unseen data — now prove it live on paper (14 days)."
                               if beat else "no strategy beat simply holding BTC on unseen data. Paper-trading the "

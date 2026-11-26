@@ -20,5 +20,5 @@ The code lives in `desk/` — these notes say when to use what. Paste only their
 |---|---|---|---|
 | Memecoin re-tune | `py -m desk.tune` | ≤ 20 lines: walk-forward result of 108 settings on unseen days + verdict | weekly; `--apply` only if PROFITABLE |
 | Majors prices | `py -m desk.majors.data` | 3 lines: candles downloaded, funding real/estimated | once, then the live bot updates itself |
-| Majors test | `py -m desk.majors.backtest` | ≤ 20 lines: 4 strategies vs BTC hold on unseen periods, picks the best | once, then monthly |
+| Majors test | `py -m desk.majors.backtest` | ≤ 20 lines: 6 strategies (incl. new rotation + vol breakout) vs BTC hold on unseen periods, weekly-target line, picks the best | once, then monthly |
 | Majors live paper | `py -m desk.majors.live` | runs forever (3rd tab); Telegram `/majors` for status + gate | keep running |

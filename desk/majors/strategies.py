@@ -145,12 +145,105 @@ class TSMomentum(Strategy):
         return self.target
 
 
+class Ranker:
+    """Shared by all coins of one Rotation run: ranks coins by their return over `lookback` hours,
+    once a day, using only completed bars."""
+
+    def __init__(self, lookback: int, n: int, allow_short: bool):
+        self.lookback, self.n, self.allow_short = lookback, n, allow_short
+        self.closes: dict[str, deque] = {}
+        self.cur_ts = None
+        self.target: dict[str, int] = {}
+
+    def push(self, sym: str, ts: int, close: float) -> None:
+        if ts != self.cur_ts:
+            if self.cur_ts is not None and self.cur_ts % 86400 == 82800:    # yesterday's last bar is complete
+                self._decide()
+            self.cur_ts = ts
+        self.closes.setdefault(sym, deque(maxlen=self.lookback + 1)).append(close)
+
+    def _decide(self) -> None:
+        rets = {s: q[-1] / q[0] - 1 for s, q in self.closes.items() if len(q) == q.maxlen and q[0] > 0}
+        if len(rets) < 2 * self.n:
+            self.target = {}
+            return
+        ranked = sorted(rets, key=rets.get, reverse=True)
+        self.target = {s: 0 for s in ranked}
+        for s in ranked[:self.n]:
+            if rets[s] > 0:
+                self.target[s] = 1
+        if self.allow_short:
+            for s in ranked[-self.n:]:
+                if rets[s] < 0:
+                    self.target[s] = -1
+
+
+class Rotation(Strategy):
+    """NEW — cross-sectional rotation: each day long the strongest coins, short the weakest."""
+    family = "rotation"
+
+    def __init__(self, sym: str, ranker: Ranker, allow_short: bool):
+        super().__init__(allow_short)
+        self.sym, self.r = sym, ranker
+
+    def update(self, bar, side, held, ts):
+        self.r.push(self.sym, ts, bar[3])
+        return self.r.target.get(self.sym, 0)
+
+
+class VolBreakout(Strategy):
+    """NEW — intraday volatility breakout: long when price runs k × yesterday's range above today's open,
+    short when it runs below; always flat by the end of the UTC day. One entry per coin per day."""
+    family = "vol breakout"
+
+    def __init__(self, k: float, allow_short: bool):
+        super().__init__(allow_short)
+        self.k = k
+        self.day = None
+        self.open = self.hi = self.lo = None
+        self.prev_range = None
+        self.traded = False
+
+    def update(self, bar, side, held, ts):
+        o, h, l, c = bar
+        d = ts // 86400
+        if d != self.day:
+            if self.hi is not None:
+                self.prev_range = self.hi - self.lo
+            self.day, self.open, self.hi, self.lo, self.traded = d, o, h, l, False
+        else:
+            self.hi, self.lo = max(self.hi, h), min(self.lo, l)
+        if ts % 86400 == 82800:
+            return 0                                   # flat at the day's end
+        if side != 0:
+            return side
+        if self.prev_range is None or self.traded:
+            return 0
+        if c > self.open + self.k * self.prev_range:
+            self.traded = True
+            return 1
+        if c < self.open - self.k * self.prev_range and self.allow_short:
+            self.traded = True
+            return -1
+        return 0
+
+
 FAMILIES = {
     "trend": (TrendEMA, [(20, 100), (50, 200), (100, 400)]),
     "breakout": (Breakout, [(240, 120), (480, 240), (720, 360)]),
     "mean reversion": (RSIRevert, [(25, 75, 48), (20, 80, 48), (30, 70, 24)]),
     "momentum": (TSMomentum, [(168,), (720,), (2160,)]),
+    "rotation": (Rotation, [(72, 1), (168, 2), (336, 2)]),
+    "vol breakout": (VolBreakout, [(0.3,), (0.5,), (0.8,)]),
 }
+
+
+def make_all(family: str, params: tuple, allow_short: bool, symbols: list[str]) -> dict:
+    """One strategy object per coin (rotation coins share one ranker)."""
+    if family == "rotation":
+        r = Ranker(*params, allow_short=allow_short)
+        return {sym: Rotation(sym, r, allow_short) for sym in symbols}
+    return {sym: make(family, params, allow_short) for sym in symbols}
 
 
 def make(family: str, params: tuple, allow_short: bool) -> Strategy:

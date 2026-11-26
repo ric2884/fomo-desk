@@ -296,3 +296,35 @@ def test_weekly_bank_in_engine():
     assert eng.banked == pytest.approx(5.0, rel=0.05)              # the week's +5% profit, banked
     assert "BTCUSDT" in eng.pos and eng.pos["BTCUSDT"].margin < 100  # position trimmed, not closed
     assert eng.tradable == pytest.approx(eng.total - eng.banked) and mon
+
+
+# ---------- new strategies ----------
+def test_rotation_longs_strongest_shorts_weakest():
+    from desk.majors.strategies import make_all
+    syms = ["A", "B", "C", "D"]
+    st = make_all("rotation", (24, 1), True, syms)
+    growth = {"A": 1.01, "B": 1.0, "C": 1.0, "D": 0.99}
+    px = {s: 100.0 for s in syms}
+    out = {}
+    for i in range(80):
+        ts = T0 + i * H
+        for s in syms:
+            px[s] *= growth[s] ** (1 / 24)
+            out[s] = st[s].update((px[s],) * 4, 0, 0, ts)
+    assert out == {"A": 1, "B": 0, "C": 0, "D": -1}
+    assert make_all("rotation", (24, 1), False, syms)["D"].allow_short is False
+
+
+def test_vol_breakout_enters_on_range_break_and_exits_at_day_end():
+    from desk.majors.strategies import VolBreakout
+    st = VolBreakout(0.5, True)
+    sig = []
+    for i in range(24):                                     # day 1: range 100..110
+        p = 100 + (10 if i == 12 else 0)
+        sig.append(st.update((100, p, 100, 100), 0, 0, T0 + i * H))
+    day2 = T0 + 86400
+    sig2 = [st.update((100, 100, 100, 100), 0, 0, day2)]   # open 100; trigger = 100 + 0.5×10 = 105
+    sig2.append(st.update((100, 106, 100, 106), 0, 0, day2 + H))
+    assert sig2[-1] == 1
+    assert st.update((106, 106, 106, 106), 1, 1, day2 + 23 * H) == 0      # flat at day end
+    assert st.update((106, 120, 106, 120), 0, 0, day2 + 2 * H) == 0       # one entry per day
