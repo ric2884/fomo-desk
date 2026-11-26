@@ -35,7 +35,7 @@ def t(mint, entry, exit_, pnl):
 
 
 def test_day_rule_locks_at_1pct_and_banks_at_2pct():
-    s = Settings()
+    s = with_overrides(Settings(), bank_mode="daily")
     led = Ledger(s)
     led.on_open("a", T0 + 10, 5)
     led.on_close("a", T0 + 20, 6.2)                       # +$1.20 = +1.2%
@@ -60,7 +60,7 @@ def test_day_rule_in_backtest_limits():
 
 # ---------- daily rule in live paper ----------
 def test_paper_day_rule_tightens_then_closes_losers(tmp_path):
-    s = with_overrides(paper_settings(tmp_path), bankroll_usd=100, kill_switch_balance=60, max_exposure_frac=1.0)
+    s = with_overrides(paper_settings(tmp_path), bank_mode="daily", bankroll_usd=100, kill_switch_balance=60, max_exposure_frac=1.0)
     desk = paper_mod.PaperDesk(s)
     win = Position("W", "W", 0, Snap(T0, 1.0, 5e4), s)
     lose = Position("L", "L", 0, Snap(T0, 1.0, 5e4), s)
@@ -109,3 +109,28 @@ def test_tune_passes_rule():
     assert not tune.passes({"trades": 29, "net": 50.0})
     assert not tune.passes({"trades": 40, "net": -0.01})
     assert tune.passes({"trades": 30, "net": 0.5})
+
+
+def test_weekly_bank_default():
+    s = Settings()
+    assert s.bank_mode == "weekly"
+    led = Ledger(s)
+    mon = T0 + 5 * DAY                                     # 2023-11-20 is a Monday
+    led.on_open("a", mon + 10, 5)
+    led.on_close("a", mon + 20, 6.5)                       # +$1.50 on Monday: locked for the day, NOT banked
+    assert led.day_state(mon + 30) == "locked" and led.banked == 0
+    led.on_open("b", mon + DAY, 5)
+    led.on_close("b", mon + DAY + 50, 6.0)                 # week now +$2.50 (≥ 2%)
+    assert led.banked == 0                                  # still the same week
+    led.on_open("c", mon + 7 * DAY + 10, 5)                # next week starts → last week's profit is banked
+    assert led.banked == pytest.approx(2.5) and led.week_banks[0][1] == pytest.approx(2.5)
+    assert led.total == pytest.approx(102.5)
+
+
+def test_weekly_bank_skips_small_weeks():
+    led = Ledger(Settings())
+    mon = T0 + 5 * DAY
+    led.on_open("a", mon + 10, 5)
+    led.on_close("a", mon + 20, 6.0)                       # +$1 week (< 2%)
+    led.on_open("b", mon + 7 * DAY + 10, 5)
+    assert led.banked == 0

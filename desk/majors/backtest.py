@@ -26,8 +26,11 @@ from .strategies import FAMILIES, combos, make
 DAY = 86400
 
 
+ATR_KS = (0.0, 3.0, 6.0)          # stop-loss: off, 3 ATRs, 6 ATRs
+
+
 def run(ts_list, bars, ms, s, funding, schedule, start_ts, end_ts, limits=True) -> Engine:
-    """schedule: list of (from_ts, family, params, allow_short). Strategies are rebuilt and warmed up
+    """schedule: list of (from_ts, family, params, allow_short, atr_k). Strategies are rebuilt and warmed up
     on the bars before each switch; positions carry over."""
     eng = Engine(ms, s, {}, funding, limits=limits)
     sched = sorted(schedule)
@@ -39,12 +42,15 @@ def run(ts_list, bars, ms, s, funding, schedule, start_ts, end_ts, limits=True) 
             break
         while k + 1 < len(sched) and sched[k + 1][0] <= ts:
             k += 1
-            _, fam, params, sh = sched[k]
+            _, fam, params, sh, atr_k = sched[k]
             eng.strats = {sym: make(fam, params, sh) for sym in ms.symbols}
+            eng.atr_k = atr_k
             for j in range(max(0, i - ms.warm_bars), i):                   # warm-up: indicators only
                 for sym, b in bars[ts_list[j]].items():
                     if sym in eng.strats:
                         eng.strats[sym].update(b, 0, 0, ts_list[j])
+                        if k == 0:
+                            eng.observe(sym, b)
         eng.on_bar(ts, bars[ts])
     eng.finish()
     return eng
@@ -117,11 +123,11 @@ def walk_forward(ts_list, bars, funding, ms: MajorsSettings, s: Settings, progre
     starts = folds(ms, last)
     oos_start = starts[0]
     # 1) every setting once over the whole history (no money limits) → daily returns to choose from
-    cs = combos()
+    cs = [(f, p, sh, k) for (f, p, sh) in combos() for k in ATR_KS]
     rets = {}
-    for k, (fam, params, sh) in enumerate(cs):
-        eng = run(ts_list, bars, ms, s, funding, [(first, fam, params, sh)], first, last, limits=False)
-        rets[(fam, params, sh)] = daily_returns(eng)
+    for k, (fam, params, sh, atr_k) in enumerate(cs):
+        eng = run(ts_list, bars, ms, s, funding, [(first, fam, params, sh, atr_k)], first, last, limits=False)
+        rets[(fam, params, sh, atr_k)] = daily_returns(eng)
         if progress:
             progress(k + 1, len(cs) + len(FAMILIES))
     # 2) per family, per fold: pick the setting with the best Sharpe on data BEFORE the fold
@@ -130,15 +136,16 @@ def walk_forward(ts_list, bars, funding, ms: MajorsSettings, s: Settings, progre
         sched = []
         for f in starts:
             cut = datetime.fromtimestamp(f, timezone.utc).strftime("%Y-%m-%d")
-            best = max(((p, sh) for (fa, p, sh) in rets if fa == fam),
+            best = max(((p, sh, k) for (fa, p, sh, k) in rets if fa == fam),
                        key=lambda ps: sharpe([r for d, r in rets[(fam, *ps)] if d < cut]))
-            sched.append((f, fam, best[0], best[1]))
+            sched.append((f, fam, *best))
         eng = run(ts_list, bars, ms, s, funding, sched, oos_start, last, limits=True)
         results[fam] = stats(eng, s, oos_start, last)
         schedules[fam] = sched
         if progress:
             progress(len(cs) + n + 1, len(cs) + len(FAMILIES))
     return {"results": results, "schedules": schedules, "btc": btc_hold(ts_list, bars, s, ms, oos_start, last),
+            "bank": s.bank_mode,
             "oos_start": oos_start, "last": last, "first": first}
 
 
@@ -146,8 +153,8 @@ def report(wf: dict, ms: MajorsSettings, funding_real: bool) -> list[str]:
     fmt = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m")  # noqa: E731
     out = [f"MAJORS · {' '.join(x[:-4] for x in ms.symbols)} · 1h bars {fmt(wf['first'])}→{fmt(wf['last'])} · "
            f"{ms.leverage:g}× · fee {ms.fee:.2%}/side + slippage + funding ({'real' if funding_real else 'estimated'})",
-           f"UNSEEN {fmt(wf['oos_start'])}→{fmt(wf['last'])}: settings re-picked every {ms.fold_months} months from "
-           f"earlier data only · $100 money limits on",
+           f"UNSEEN {fmt(wf['oos_start'])}→{fmt(wf['last'])}: settings + stop-loss re-picked every {ms.fold_months} "
+           f"months from earlier data only · $100 limits · {wf.get('bank', 'weekly')} profit bank",
            f"{'strategy':<16}{'per year':>9}{'max DD':>8}{'days≥+1%':>10}{'avg day':>9}{'banked':>8}{'end $':>8}"]
     rows = list(wf["results"].items()) + [("BTC buy & hold", wf["btc"])]
     for name, r in rows:
@@ -157,8 +164,9 @@ def report(wf: dict, ms: MajorsSettings, funding_real: bool) -> list[str]:
     best = max(wf["results"], key=lambda f: wf["results"][f]["sharpe"])
     b, h = wf["results"][best], wf["btc"]
     last_pick = wf["schedules"][best][-1]
-    out.append(f"Best (risk-adjusted): {best} — latest settings {last_pick[2]}, "
-               f"{'long+short' if last_pick[3] else 'long only'} → paper trading this one live")
+    stop = f"stop {last_pick[4]:g}×ATR" if last_pick[4] else "no stop-loss"
+    out.append(f"Best (risk-adjusted): {best} — latest {last_pick[2]}, "
+               f"{'long+short' if last_pick[3] else 'long only'}, {stop} → paper trading this one live")
     out.append(f"vs BTC buy-and-hold: {b['cagr'] - h['cagr']:+.1%} per year, drawdown {b['mdd']:.0%} vs {h['mdd']:.0%}")
     out.append(f"Costs for best: fees ${b['fees']:.2f}, funding ${b['funding']:+.2f}, {b['trades']} positions opened")
     hit_rate = b["hit"] / max(1, b["days"])
@@ -188,9 +196,9 @@ def main() -> None:
     lines = report(wf, ms, real)
     print("\n".join(lines))
     best = max(wf["results"], key=lambda f: wf["results"][f]["sharpe"])
-    _, fam, params, sh = wf["schedules"][best][-1]
-    Path(ms.db_path).with_name("majors_choice.json").write_text(
-        json.dumps({"family": fam, "params": list(params), "allow_short": sh, "leverage": ms.leverage}, indent=1))
+    _, fam, params, sh, atr_k = wf["schedules"][best][-1]
+    Path(ms.db_path).with_name("majors_choice.json").write_text(json.dumps(
+        {"family": fam, "params": list(params), "allow_short": sh, "atr_k": atr_k, "leverage": ms.leverage}, indent=1))
 
 
 if __name__ == "__main__":

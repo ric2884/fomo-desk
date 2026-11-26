@@ -20,7 +20,9 @@ Also:
   and (majors-and-tuning branch) majors paper (`py -m desk.majors.live`).
 - Majors bot is PAPER ONLY, long+short, leverage 1× default and 2× hard max. No real money, no live shorts, no exchange
   connection until a bot passes its 14-day paper gate AND we've checked which futures exchange is legal for the user. Ask first.
-- Daily profit rule (+1% lock, +2% bank) is a target to measure against, never a promise. Banked money is never traded.
+- Profit rule: +1%/day is a target to measure against, never a promise. Day +1% → lock new entries. Profit is banked
+  WEEKLY (week ≥ +2%), the user's choice; `bank_mode` "daily" is the old rule. Banked money is never traded.
+- Majors stop-loss is a chandelier ATR stop; the walk-forward picks off/3×/6× per strategy from earlier data only.
 - Re-tuning is walk-forward only (pick settings on earlier days, test on later ones). Never apply settings that
   weren't profitable on unseen data with ≥ 30 trades.
 - Never ask for or display secrets (Telegram token lives only in the laptop's `.env`).

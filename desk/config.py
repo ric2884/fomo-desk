@@ -64,7 +64,9 @@ class Settings:
 
     # --- daily profit rule (target to measure against, NOT a promise) ---
     day_lock_pct: float = 0.01      # day up 1%: no new trades, tighten stops on open ones
-    day_bank_pct: float = 0.02      # day up 2%: bank the profit, keep only winners with a tight trail
+    day_bank_pct: float = 0.02      # bank_mode "daily": day up 2% → bank, keep only winners with a tight trail
+    bank_mode: str = "weekly"       # "weekly": at each week's end, bank the week's profit if it reached week_bank_pct
+    week_bank_pct: float = 0.02
     day_lock_trail: float = 0.15    # memecoin trailing stop after the day is banked
 
     # --- backtest ---
@@ -84,6 +86,8 @@ def load_settings(path: str | Path | None = None) -> Settings:
             raise ValueError(f"Unknown settings in {p}: {sorted(bad)}")
         for k, v in data.items():
             setattr(s, k, type(getattr(s, k))(v))
+    if s.bank_mode not in ("daily", "weekly"):
+        raise ValueError(f"bank_mode must be 'daily' or 'weekly', not {s.bank_mode!r}")
     if s.entry_type not in ("dip", "momentum"):
         raise ValueError(f"entry_type must be 'dip' or 'momentum', not {s.entry_type!r}")
     if s.ticket_usd < s.min_ticket_usd:

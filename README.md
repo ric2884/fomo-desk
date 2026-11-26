@@ -79,7 +79,8 @@ Other commands: `py -m desk.paper --report` (same report in the terminal) · `py
 
 ## Major-crypto bot (PAPER ONLY) — `majors-and-tuning` branch
 
-BTC, ETH, SOL, BNB, XRP, ADA · hourly · long and short · 1× leverage (2× max) · futures fees, slippage, funding, liquidation.
+BTC, ETH, SOL, BNB, XRP, ADA · hourly since 2018 · long and short · 1× leverage (2× max) · futures fees, slippage,
+funding, liquidation · volatility stop-loss (chandelier: k × ATR behind the best price; walk-forward picks off/3/6).
 Four strategies (trend, breakout, mean reversion, momentum) are tested on years of history: settings re-picked every
 6 months from earlier data only, then judged on the months they never saw, against simply holding BTC.
 
@@ -93,8 +94,10 @@ py -m desk.majors.backtest
 py -m desk.majors.live
 ```
 
-**Daily profit rule (both bots):** day +1% → no new trades, stops tightened. Day +2% → losers closed, today's profit
-moved to a *banked* balance the bot never trades, winners trail. A target to measure against — not a promise.
+**Profit rule (both bots):** target +1% a day (measured, never promised). Day +1% → no new trades, stops tightened.
+**Weekly bank:** at each week's end, if the week made ≥ +2%, that profit moves to a *banked* balance the bot never
+trades (winning positions are trimmed if the profit isn't in cash). `bank_mode: "daily"` in settings.json restores
+the old daily +2% bank.
 
 ## Money limits (in code: `desk/config.py`)
 

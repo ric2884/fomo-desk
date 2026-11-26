@@ -75,9 +75,26 @@ def update(con, ms: MajorsSettings, client: httpx.Client | None = None, now: flo
     now_ms = int((now or time.time()) * 1000)
     added = {}
     for sym in ms.symbols:
+        n = 0
+        first = con.execute("SELECT MIN(ts) FROM candles WHERE symbol=?", (sym,)).fetchone()[0]
+        if first and first > ts_of(ms.start) + HOUR and not con.execute(
+                "SELECT 1 FROM meta WHERE key=?", (f"backfilled:{sym}:{ms.start}",)).fetchone():
+            start = ts_of(ms.start)                   # history start moved earlier: backfill the gap
+            while start < first:
+                rows = _get(client, KLINES, {"symbol": sym, "interval": "1h", "startTime": start * 1000,
+                                             "endTime": (first - HOUR) * 1000, "limit": 1000})
+                got = parse_klines(rows or [], now_ms)
+                if not got:
+                    break
+                con.executemany("INSERT OR IGNORE INTO candles VALUES (?,?,?,?,?,?,?)", [(sym, *g) for g in got])
+                con.commit()
+                n += len(got)
+                start = got[-1][0] + HOUR
+                time.sleep(sleep)
+            con.execute("INSERT OR REPLACE INTO meta VALUES (?, '1')", (f"backfilled:{sym}:{ms.start}",))
+            con.commit()
         last = con.execute("SELECT MAX(ts) FROM candles WHERE symbol=?", (sym,)).fetchone()[0]
         start = (last + HOUR) if last else ts_of(ms.start)
-        n = 0
         while start * 1000 < now_ms - HOUR * 1000:
             rows = _get(client, KLINES, {"symbol": sym, "interval": "1h", "startTime": start * 1000, "limit": 1000})
             got = parse_klines(rows or [], now_ms)

@@ -37,6 +37,7 @@ class LiveMajors:
     def __init__(self, ms: MajorsSettings, s: Settings, choice: dict, con):
         self.ms, self.s, self.choice, self.con = ms, s, choice, con
         self.engine = Engine(ms, s, self._strats(), self._funding())
+        self.engine.atr_k = choice.get("atr_k", 0.0)
         self.meta = {"choice": choice, "started": 0, "btc_start": None}
         p = state_path(ms)
         if p.exists():
@@ -71,10 +72,13 @@ class LiveMajors:
 
     def _warm(self) -> None:
         """Rebuild indicators from history up to where trading stands (or now, on a fresh start)."""
+        fresh = not self.engine.last_ts
         upto = self.engine.last_ts or self._latest_ts()
         for ts, bars in self._bars_between(upto - self.ms.warm_bars * HOUR, upto):
             for sym, b in bars.items():
                 self.engine.strats[sym].update(b, 0, 0, ts)
+                if fresh:                                 # a restored state already carries its volatility
+                    self.engine.observe(sym, b)
         if not self.engine.last_ts:                       # fresh start: trade from the next new bar
             self.engine.last_ts = upto
             self.meta["started"] = upto
@@ -112,7 +116,8 @@ def status_text(st: dict, s: Settings | None = None) -> str:
     days = [d for d in e["days"] if d[0] >= datetime.fromtimestamp(meta["started"], timezone.utc).strftime("%Y-%m-%d")]
     hit = sum(1 for d in days if d[3])
     c = meta["choice"]
-    lines = [f"📈 MAJORS PAPER · {c['family']} {tuple(c['params'])} {'long+short' if c['allow_short'] else 'long only'}",
+    stop = f"stop {c.get('atr_k', 0):g}×ATR" if c.get("atr_k") else "no stop-loss"
+    lines = [f"📈 MAJORS PAPER · {c['family']} {tuple(c['params'])} {'long+short' if c['allow_short'] else 'long only'}, {stop}",
              f"Total ${total:.2f} (start ${s.bankroll_usd:.0f}) · banked ${e['banked']:.2f}"
              + (" · KILLED" if e["killed"] else "") + (f" · today: {e['day_state']}" if e["day_state"] != "normal" else ""),
              f"Days reaching +1%: {hit} of {len(days)}"]

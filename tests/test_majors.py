@@ -183,7 +183,7 @@ def test_leverage_capped_at_2x():
 # ---------- engine: daily profit rule + money limits ----------
 def test_day_rule_locks_then_banks():
     ms = one_coin()
-    eng = Engine(ms, S, {"BTCUSDT": Fixed({T0: 1, T0 + 5 * H: 1})})
+    eng = Engine(ms, with_overrides(S, bank_mode="daily"), {"BTCUSDT": Fixed({T0: 1, T0 + 5 * H: 1})})
     prices = [(100, 100, 100, 100)] * 2 + [(101.5, 101.5, 101.5, 101.5)] + [(103, 103, 103, 103)] * 3
     ev = []
     for i, b in enumerate(prices):
@@ -253,7 +253,7 @@ def test_live_matches_backtest(tmp_path):
     con.executemany("INSERT INTO candles VALUES (?,?,?,?,?,?,0)",
                     [(sym, t, *bars[t][sym]) for t in ts[:k + 1] for sym in ms.symbols])
     con.commit()
-    choice = {"family": "trend", "params": [10, 50], "allow_short": True, "leverage": 1.0}
+    choice = {"family": "trend", "params": [10, 50], "allow_short": True, "atr_k": 3.0, "leverage": 1.0}
     lv = live.LiveMajors(ms, S, choice, con)
     assert lv.engine.last_ts == ts[k]
     for j in range(k + 1, len(ts), 37):                       # new candles arrive in uneven chunks
@@ -263,7 +263,36 @@ def test_live_matches_backtest(tmp_path):
         lv.catch_up()
     lv2 = live.LiveMajors(ms, S, choice, con)                 # restart: state restored from file
     assert lv2.engine.total == pytest.approx(lv.engine.total)
-    eng = mb.run(ts, bars, ms, S, {}, [(ts[k + 1], "trend", (10, 50), True)], ts[k + 1], ts[-1])
+    eng = mb.run(ts, bars, ms, S, {}, [(ts[k + 1], "trend", (10, 50), True, 3.0)], ts[k + 1], ts[-1])
     assert lv.engine.total == pytest.approx(eng.total)
     text = live.status_from_file(live.state_path(ms))
     assert "Gate:" in text and len(text.splitlines()) <= 12
+
+
+# ---------- ATR stop-loss + weekly bank ----------
+def test_atr_stop_starts_k_atrs_away_and_trails():
+    ms = one_coin(atr_k=3.0)
+    eng = Engine(ms, with_overrides(S, day_lock_pct=9), {"BTCUSDT": Fixed({T0 + 20 * H: 1})})
+    feed(eng, [(100, 101, 99, 100)] * 22)                 # ATR ≈ 2 → stop ≈ entry − 6
+    p = eng.pos["BTCUSDT"]
+    assert p.stop == pytest.approx(p.entry - 3 * eng.atr["BTCUSDT"], rel=0.05)
+    feed(eng, [(110, 111, 109, 110)] * 3, start=T0 + 22 * H)   # price rises → stop ratchets up
+    assert eng.pos["BTCUSDT"].stop > 100
+    feed(eng, [(110, 110, 95, 96)], start=T0 + 25 * H)       # drop through the stop → closed at the stop
+    assert "BTCUSDT" not in eng.pos
+
+
+def test_atr_off_means_no_stop():
+    eng = Engine(one_coin(), with_overrides(S, day_lock_pct=9), {"BTCUSDT": Fixed({T0: 1})})
+    feed(eng, [(100, 101, 99, 100)] * 5)
+    assert eng.pos["BTCUSDT"].stop is None
+
+
+def test_weekly_bank_in_engine():
+    eng = Engine(one_coin(), with_overrides(S, day_lock_pct=9), {"BTCUSDT": Fixed({T0: 1})})
+    mon = T0 + 3 * 86400                                   # 2021-01-04 is a Monday
+    week = [(100,) * 4] * 2 + [(105,) * 4] * (24 * 7 - 2)
+    feed(eng, [(100,) * 4] * 72 + week + [(105,) * 4] * 2)
+    assert eng.banked == pytest.approx(5.0, rel=0.05)              # the week's +5% profit, banked
+    assert "BTCUSDT" in eng.pos and eng.pos["BTCUSDT"].margin < 100  # position trimmed, not closed
+    assert eng.tradable == pytest.approx(eng.total - eng.banked) and mon

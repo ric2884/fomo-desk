@@ -29,6 +29,9 @@ class Ledger:
         self.banked = 0.0                                  # profit set aside by the daily rule; never traded
         self.day_start: dict[str, float] = {}
         self.day_banked: dict[str, float] = defaultdict(float)
+        self.week_start: dict[str, float] = {}
+        self.cur_week = ""
+        self.week_banks: list[tuple[str, float]] = []          # (week, amount banked)
 
     @property
     def equity(self) -> float:
@@ -41,6 +44,19 @@ class Ledger:
         return self.equity + self.banked
 
     def _day(self, ts: float) -> str:
+        w = week_of(ts)
+        if w != self.cur_week:                                 # new week: bank last week's profit (weekly mode)
+            prev = self.cur_week
+            if prev and self.s.bank_mode == "weekly":
+                gain = self.week_pnl[prev]
+                if gain >= self.s.week_bank_pct * self.week_start[prev]:
+                    amt = min(self.cash, gain)
+                    if amt > 0:
+                        self.cash -= amt
+                        self.banked += amt
+                        self.week_banks.append((prev, amt))
+            self.cur_week = w
+            self.week_start.setdefault(w, self.total)
         d = day_of(ts)
         if d not in self.day_start:
             self.day_start[d] = self.total
@@ -50,7 +66,7 @@ class Ledger:
         """'normal', 'locked' (day ≥ +1%: no new trades) or 'banked' (day ≥ +2%: profit set aside)."""
         d = self._day(ts)
         start = self.day_start[d]
-        if self.day_pnl[d] >= self.s.day_bank_pct * start:
+        if self.s.bank_mode == "daily" and self.day_pnl[d] >= self.s.day_bank_pct * start:
             return "banked"
         if self.day_pnl[d] >= self.s.day_lock_pct * start:
             return "locked"
