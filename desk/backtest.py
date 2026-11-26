@@ -54,8 +54,14 @@ def run(coins: list[Coin], s: Settings) -> dict:
             cands.append(t)
         else:
             skips[why.split(" ")[0] if why.startswith(("top10", "lp", "liquidity", "creator", "danger")) else why] += 1
-    cands.sort(key=lambda t: t.entry_ts)
+    res = apply_limits(cands, s)
+    res["skips"] = skips
+    return res
 
+
+def apply_limits(cands: list[Trade], s: Settings) -> dict:
+    """Money limits + daily profit rule, in time order (STEP 7). Shared by backtest and re-tune."""
+    cands = sorted(cands, key=lambda t: t.entry_ts)
     led = Ledger(s)
     open_: list[Trade] = []
     taken: list[Trade] = []
@@ -77,8 +83,8 @@ def run(coins: list[Coin], s: Settings) -> dict:
         taken.append(t)
     close_until(float("inf"))
     equity = led.equity_curve or [(cands[0].entry_ts if cands else 0, s.bankroll_usd)]
-    return {"trades": taken, "skips": skips, "blocked": blocked, "equity": equity,
-            "final": led.cash, "killed": led.killed}
+    return {"trades": taken, "skips": Counter(), "blocked": blocked, "equity": equity,
+            "final": led.cash, "killed": led.killed, "ledger": led}
 
 
 def metrics(res: dict, s: Settings) -> dict:

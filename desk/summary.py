@@ -10,7 +10,7 @@ import time
 
 from . import backtest
 from .config import Settings, load_settings
-from .ledger import Ledger
+from .ledger import Ledger, day_of
 from .strategy import Trade
 
 MAX_LINES = 20
@@ -28,6 +28,7 @@ def summarize(title: str, trades: list[Trade], s: Settings, verdict: str | None 
     out = [title,
            f"Trades {n} · win rate {m['win_rate']:.0f}% · avg P/L ${avg:+.2f} · net ${m['net']:+.2f}",
            f"Max drawdown {m['max_dd_pct']:.1f}% · profit factor {pf} · net without 3 best ${m['net_ex_top3']:+.2f}"]
+    out.append(daily_line(trades, s))
     if verdict:
         out.append(f"Verdict: {verdict}")
     ranked = sorted(trades, key=lambda t: t.pnl, reverse=True)
@@ -38,6 +39,30 @@ def summarize(title: str, trades: list[Trade], s: Settings, verdict: str | None 
         out.append("5 worst:")
         out += [fmt(t) for t in ranked[::-1][:5]]
     return out[:MAX_LINES]
+
+
+def daily_line(trades: list[Trade], s: Settings) -> str:
+    """Days reaching +1%, average day, and BTC buy-and-hold over the same days."""
+    from collections import Counter
+    from datetime import datetime, timedelta, timezone
+    if not trades:
+        return "Days ≥ +1%: no trades"
+    pnl = Counter()
+    for t in trades:
+        pnl[day_of(t.exit_ts)] += t.pnl
+    first = datetime.strptime(day_of(min(t.entry_ts for t in trades)), "%Y-%m-%d")
+    last = datetime.strptime(day_of(max(t.exit_ts for t in trades)), "%Y-%m-%d")
+    days = [(first + timedelta(days=i)).strftime("%Y-%m-%d") for i in range((last - first).days + 1)]
+    hit = sum(1 for d in days if pnl[d] >= s.day_lock_pct * s.bankroll_usd)
+    avg = sum(pnl[d] for d in days) / len(days)
+    btc = None
+    try:
+        from .majors.data import btc_change
+        btc = btc_change(days)
+    except Exception:  # noqa: BLE001 — majors data optional
+        pass
+    return (f"Days ≥ +1%: {hit} of {len(days)} · avg day ${avg:+.2f} ({avg / s.bankroll_usd:+.2%})"
+            + (f" · BTC hold same days {btc}" if btc else ""))
 
 
 def backtest_summary(s: Settings) -> list[str]:

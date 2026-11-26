@@ -83,6 +83,38 @@ def price_at(snaps: list[Snap], ts: float) -> Snap | None:
 
 
 def find_entry(snaps: list[Snap], t0: float, s: Settings) -> int | None:
+    """Index of the snapshot where the entry signal fires, or None."""
+    if s.entry_type == "momentum":
+        return find_momentum_entry(snaps, t0, s)
+    return find_dip_entry(snaps, t0, s)
+
+
+def find_momentum_entry(snaps: list[Snap], t0: float, s: Settings) -> int | None:
+    """Buy a breakout: a new post-graduation high, up mom_up over the last mom_window_s, liquidity holding."""
+    high = 0.0
+    liq_peak = 0.0
+    j = 0
+    for i, x in enumerate(snaps):
+        if x.price <= 0:
+            return None
+        prev_high = high
+        high = max(high, x.price)
+        liq_peak = max(liq_peak, x.liq)
+        age = x.ts - t0
+        if age < s.min_age_s:
+            continue
+        if age > s.max_entry_age_s:
+            return None
+        while snaps[j].ts < x.ts - s.mom_window_s:
+            j += 1
+        base = snaps[j].price
+        if (j < i and base > 0 and x.price >= prev_high and x.price / base - 1 >= s.mom_up
+                and x.liq >= liq_peak * (1 - s.max_liq_drop_entry)):
+            return i
+    return None
+
+
+def find_dip_entry(snaps: list[Snap], t0: float, s: Settings) -> int | None:
     """Index of the snapshot where the dip-entry signal fires, or None."""
     high = 0.0
     liq_peak = 0.0
@@ -120,6 +152,8 @@ class Position:
         self.last = fill
         self.pending: tuple[str, float, float] | None = None   # (why, share of tokens, due ts)
         self.closed = False
+        self.stop_px: float | None = None       # daily rule: tightened stop price
+        self.trail_override: float | None = None  # daily rule: tighter trail, active immediately
         self.trade = Trade(mint, symbol, fill.ts, fill.ts, entry_px, ticket, 0.0, "")
 
     def _sell(self, n_tokens: float, at: Snap, why: str) -> None:
@@ -161,8 +195,10 @@ class Position:
             why = "rug"
         elif x.liq < self.prev_liq * (1 - s.liq_pull_drop):
             why = "liquidity pulled"
-        elif x.price <= self.fill_price * (1 - s.stop):
+        elif x.price <= max(self.fill_price * (1 - s.stop), getattr(self, "stop_px", None) or 0.0):
             why = "stop"
+        elif getattr(self, "trail_override", None) and x.price <= self.peak * (1 - self.trail_override):
+            why = "day trail"
         elif self.tp_done and x.price <= self.peak * (1 - s.trail):
             why = "trail"
         elif x.ts - self.fill_ts >= s.time_stop_s:
@@ -207,6 +243,8 @@ class Position:
         p.s = s
         p.last = Snap(*d["last"])
         p.pending = tuple(d["pending"]) if d["pending"] else None
+        p.stop_px = d.get("stop_px")
+        p.trail_override = d.get("trail_override")
         p.trade = Trade(**d["trade"])
         return p
 

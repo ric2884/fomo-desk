@@ -20,11 +20,11 @@ from pathlib import Path
 
 from . import db, fields
 from .config import ROOT, Settings, load_settings
-from .ledger import Ledger
+from .ledger import Ledger, day_of
 from .strategy import Position, Snap, Trade, check_filters, find_entry, interp
 
 log = logging.getLogger("paper")
-VERSION = "2026-11-23b"   # shown in Telegram so we can tell which code is running
+VERSION = "2026-11-26-majors"   # shown in Telegram so we can tell which code is running
 STALE_SIGNAL_S = 30       # a dip signal older than this (e.g. after a restart) is not traded
 NO_DATA_CLOSE_S = 300     # an open position with no price for 5 min is assumed rugged
 
@@ -192,9 +192,33 @@ class PaperDesk:
         self.con.commit()
         sign = "+" if t.pnl >= 0 else "−"
         msgs = [f"PAPER · Sold {t.symbol} · {sign}${abs(t.pnl):.2f} ({t.pnl_pct:+.0f}%) · {t.exit_reason}\n"
-                f"Balance ${self.ledger.equity:.2f}"]
+                f"Balance ${self.ledger.total:.2f}" + (f" (banked ${self.ledger.banked:.2f})" if self.ledger.banked else "")]
         if self.ledger.killed:
-            msgs.append(f"🛑 PAPER kill switch: balance ${self.ledger.equity:.2f}. No more buys.")
+            msgs.append(f"🛑 PAPER kill switch: balance ${self.ledger.total:.2f}. No more buys.")
+        return msgs
+
+    def _day_rule(self, now: float) -> list[str]:
+        """Daily profit rule: +1% → no new trades, tighter stops. +2% → close losers, trail winners."""
+        state = self.ledger.day_state(now)
+        msgs = []
+        day = day_of(now)
+        if state != "normal" and self.kv_get("day_state") != f"{day}:{state}":
+            self.kv_set("day_state", f"{day}:{state}")
+            pnl = self.ledger.day_pnl[day]
+            msgs.append(f"🎯 PAPER day +${pnl:.2f}: target reached, no new trades today, stops tightened" if state == "locked"
+                        else f"🏦 PAPER day +${pnl:.2f}: profit banked (total banked ${self.ledger.banked:.2f}), "
+                             "losers closed, winners trailing")
+        for p in list(self.positions.values()):
+            if state == "locked" and getattr(p, "stop_px", None) is None:
+                p.stop_px = max(p.fill_price * (1 - self.s.stop), p.last.price * (1 - self.s.stop / 2))
+                self._save_open(p)
+            elif state == "banked":
+                if p.last.price <= p.fill_price:
+                    p.finish("day banked: closed loser", p.last)
+                    msgs += self._close(p)
+                elif not getattr(p, "trail_override", None):
+                    p.trail_override = self.s.day_lock_trail
+                    self._save_open(p)
         return msgs
 
     def step(self, now: float | None = None) -> list[str]:
@@ -215,6 +239,7 @@ class PaperDesk:
             except Exception as e:  # noqa: BLE001
                 log.exception("coin %s failed: %r", mint, e)
                 c.decided = True                 # stop trying to enter this coin
+        msgs += self._day_rule(now)
         for mint, p in list(self.positions.items()):                 # positions whose price feed died
             if now - p.last.ts > NO_DATA_CLOSE_S:
                 p.finish("no price data (assumed rug)", Snap(now, 0.0, 0.0))
@@ -254,7 +279,7 @@ def report_text(desk: PaperDesk, now: float, since: float | None = None) -> str:
     recent = [t for t in trades if since is None or t.exit_ts >= since]
     wins = sum(1 for t in recent if t.pnl > 0)
     lines = [f"📊 PAPER report{' (last 24h)' if since else ''}",
-             f"Balance: ${desk.ledger.equity:.2f} (start ${desk.s.bankroll_usd:.0f})",
+             f"Balance: ${desk.ledger.total:.2f} (start ${desk.s.bankroll_usd:.0f}, banked ${desk.ledger.banked:.2f})",
              f"Trades: {len(recent)} · wins {wins} · net ${sum(t.pnl for t in recent):+.2f}",
              f"Open positions: {len(desk.positions)}" + (" · PAUSED" if desk.paused else ""),
              "", "Gate to real money:"]
@@ -266,7 +291,7 @@ def report_text(desk: PaperDesk, now: float, since: float | None = None) -> str:
 
 
 def status_text(desk: PaperDesk) -> str:
-    lines = [f"Balance ${desk.ledger.equity:.2f} · cash ${desk.ledger.cash:.2f}"
+    lines = [f"Balance ${desk.ledger.total:.2f} · cash ${desk.ledger.cash:.2f} · banked ${desk.ledger.banked:.2f}"
              + (" · PAUSED" if desk.paused else "") + (" · KILLED" if desk.ledger.killed else "")]
     for p in desk.positions.values():
         chg = (p.last.price / p.fill_price - 1) * 100 if p.fill_price else 0
@@ -294,6 +319,9 @@ async def run(s: Settings) -> None:
                     await tg.send(status_text(desk))
                 elif cmd == "/report":
                     await tg.send(report_text(desk, time.time()))
+                elif cmd == "/majors":
+                    from .majors.live import status_from_file
+                    await tg.send(status_from_file())
                 elif cmd == "/pause":
                     desk.kv_set("paused", "1")
                     await tg.send("⏸ Paused: no new buys. Open positions are still managed.")

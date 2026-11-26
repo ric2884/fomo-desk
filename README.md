@@ -77,6 +77,25 @@ You get a message for every buy and sell, and a daily report at 08:00 with the *
 
 Other commands: `py -m desk.paper --report` (same report in the terminal) · `py -m desk.paper --reset` (start over at $100).
 
+## Major-crypto bot (PAPER ONLY) — `majors-and-tuning` branch
+
+BTC, ETH, SOL, BNB, XRP, ADA · hourly · long and short · 1× leverage (2× max) · futures fees, slippage, funding, liquidation.
+Four strategies (trend, breakout, mean reversion, momentum) are tested on years of history: settings re-picked every
+6 months from earlier data only, then judged on the months they never saw, against simply holding BTC.
+
+```bash
+py -m desk.majors.data
+```
+```bash
+py -m desk.majors.backtest
+```
+```bash
+py -m desk.majors.live
+```
+
+**Daily profit rule (both bots):** day +1% → no new trades, stops tightened. Day +2% → losers closed, today's profit
+moved to a *banked* balance the bot never trades, winners trail. A target to measure against — not a promise.
+
 ## Money limits (in code: `desk/config.py`)
 
 $100 bankroll · $5 tickets · max 3 open · max 15 trades/day · stop for the day at −$8 · pause for the week at −$20 · **kill switch at $60**.

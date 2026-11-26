@@ -30,6 +30,9 @@ class Settings:
     fail_rate: float = 0.05         # share of buys that fail
 
     # --- strategy (STEP 3) — starting guesses, NOT proven ---
+    entry_type: str = "dip"         # "dip" (buy the first dip) or "momentum" (buy a breakout)
+    mom_up: float = 0.30            # momentum: price up this much over mom_window_s, at a new high
+    mom_window_s: int = 120
     ticket_usd: float = 5.0
     min_ticket_usd: float = 5.0
     min_liq_usd: float = 20_000
@@ -59,6 +62,11 @@ class Settings:
     weekly_loss_limit: float = 20.0
     kill_switch_balance: float = 60.0
 
+    # --- daily profit rule (target to measure against, NOT a promise) ---
+    day_lock_pct: float = 0.01      # day up 1%: no new trades, tighten stops on open ones
+    day_bank_pct: float = 0.02      # day up 2%: bank the profit, keep only winners with a tight trail
+    day_lock_trail: float = 0.15    # memecoin trailing stop after the day is banked
+
     # --- backtest ---
     train_frac: float = 0.70
     min_trades_for_tuning: int = 20
@@ -76,6 +84,8 @@ def load_settings(path: str | Path | None = None) -> Settings:
             raise ValueError(f"Unknown settings in {p}: {sorted(bad)}")
         for k, v in data.items():
             setattr(s, k, type(getattr(s, k))(v))
+    if s.entry_type not in ("dip", "momentum"):
+        raise ValueError(f"entry_type must be 'dip' or 'momentum', not {s.entry_type!r}")
     if s.ticket_usd < s.min_ticket_usd:
         raise ValueError(f"ticket_usd {s.ticket_usd} is below the ${s.min_ticket_usd} minimum")
     return s

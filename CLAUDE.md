@@ -16,6 +16,12 @@ Goal: find out honestly whether the strategy has an edge after costs before any 
 
 Also:
 - Every code change: run `python3 -m pytest -q`, commit, push. The user updates by downloading the ZIP and choosing "Replace".
-- Two tabs must keep running on the laptop: recorder (`py -m desk.recorder`) and paper (`py -m desk.paper`).
+- Tabs that keep running on the laptop: recorder (`py -m desk.recorder`), memecoin paper (`py -m desk.paper`),
+  and (majors-and-tuning branch) majors paper (`py -m desk.majors.live`).
+- Majors bot is PAPER ONLY, long+short, leverage 1× default and 2× hard max. No real money, no live shorts, no exchange
+  connection until a bot passes its 14-day paper gate AND we've checked which futures exchange is legal for the user. Ask first.
+- Daily profit rule (+1% lock, +2% bank) is a target to measure against, never a promise. Banked money is never traded.
+- Re-tuning is walk-forward only (pick settings on earlier days, test on later ones). Never apply settings that
+  weren't profitable on unseen data with ≥ 30 trades.
 - Never ask for or display secrets (Telegram token lives only in the laptop's `.env`).
 - Strategy rules live in one place (`Position` in `strategy.py`, money limits in `ledger.py`), shared by backtest and paper.

@@ -70,7 +70,7 @@ class Telegram:
             cmd = text[0].split("@")[0].lower()
             if self.owner is None and cmd == "/start":
                 self.kv_set("owner_chat_id", str(chat))
-                await self.send("✅ You are now the owner of this desk. Commands: /status /report /pause /resume")
+                await self.send("✅ You are now the owner of this desk. Commands: /status /report /majors /pause /resume")
                 continue
             if chat == self.owner:
                 cmds.append(cmd)
