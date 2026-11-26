@@ -21,6 +21,7 @@ from ..ledger import day_of, week_of
 from .config import MajorsSettings
 
 FUNDING_EVERY = 8 * 3600
+TARGET_DAY = 0.01          # the +1%/day target: measured always, separate from the lock setting
 
 
 @dataclass
@@ -227,8 +228,10 @@ class Engine:
             self.observe(sym, b)
         total = self.total
 
-        # 5. daily profit rule
+        # 5. daily profit rule (the +1% target is always measured, even when the lock is off)
         day_pnl = total - self.day_start
+        if day_pnl >= TARGET_DAY * self.day_start:
+            self.day_hit = True
         if self.day_state == "normal" and day_pnl >= self.s.day_lock_pct * self.day_start:
             self.day_state, self.day_hit = "locked", True
             for sym, p in self.pos.items():

@@ -17,10 +17,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..config import Settings, load_settings
+from ..config import Settings, load_settings, with_overrides
 from . import data
 from .config import MajorsSettings
-from .engine import Engine
+from .engine import TARGET_DAY, Engine
 from .strategies import FAMILIES, combos, make_all
 
 DAY = 86400
@@ -122,18 +122,20 @@ def btc_hold(ts_list, bars, s: Settings, ms: MajorsSettings, start_ts, end_ts) -
         d = datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d")
         if d != day:
             if day:
-                days.append((start, val, hi >= start * (1 + s.day_lock_pct)))
+                days.append((day, start, val, hi >= start * (1 + TARGET_DAY)))
             day, start, hi = d, val, val
         val = qty * bars[t]["BTCUSDT"][3]
         hi = max(hi, val)                         # hourly closes, same as the bots are measured
         peak = max(peak, val)
         mdd = max(mdd, (peak - val) / peak)
-    days.append((start, val, hi >= start * (1 + s.day_lock_pct)))
+    days.append((day, start, val, hi >= start * (1 + TARGET_DAY)))
     end = val * (1 - ms.fee - ms.slippage("BTCUSDT"))
     years = max((end_ts - start_ts) / (365 * DAY), 1e-9)
+    weeks = weekly(days)
     return {"end": end, "cagr": (end / s.bankroll_usd) ** (1 / years) - 1, "mdd": mdd,
-            "hit": sum(1 for d in days if d[2]), "days": len(days),
-            "avg": sum(e / st - 1 for st, e, _ in days) / len(days), "banked": 0.0, "killed": False}
+            "hit": sum(1 for d in days if d[3]), "days": len(days),
+            "avg": sum(e / st - 1 for _, st, e, _ in days) / len(days), "banked": 0.0, "killed": False,
+            "avg_week": sum(weeks) / len(weeks), "weeks_5": sum(1 for w in weeks if w >= 0.05), "n_weeks": len(weeks)}
 
 
 def walk_forward(ts_list, bars, funding, ms: MajorsSettings, s: Settings, progress=None) -> dict:
@@ -167,23 +169,24 @@ def walk_forward(ts_list, bars, funding, ms: MajorsSettings, s: Settings, progre
             "oos_start": oos_start, "last": last, "first": first}
 
 
-def report(wf: dict, ms: MajorsSettings, funding_real: bool) -> list[str]:
+def report(wf: dict, ms: MajorsSettings, funding_real: bool, pick: str = "sharpe", mode: str = "safe") -> list[str]:
     fmt = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m")  # noqa: E731
     out = [f"MAJORS · {' '.join(x[:-4] for x in ms.symbols)} · 1h bars {fmt(wf['first'])}→{fmt(wf['last'])} · "
            f"{ms.leverage:g}× · fee {ms.fee:.2%}/side + slippage + funding ({'real' if funding_real else 'estimated'})",
            f"UNSEEN {fmt(wf['oos_start'])}→{fmt(wf['last'])}: settings + stop-loss re-picked every {ms.fold_months} "
-           f"months from earlier data only · $100 limits · {wf.get('bank', 'weekly')} profit bank",
-           f"{'strategy':<16}{'per year':>9}{'max DD':>8}{'days≥+1%':>10}{'avg day':>9}{'banked':>8}{'end $':>8}"]
+           f"months from earlier data only · $100 limits · "
+           + ("MAX MODE: no lock, no bank" if mode == "max" else f"{wf.get('bank', 'weekly')} profit bank"),
+           f"{'strategy':<16}{'per year':>9}{'max DD':>8}{'days≥+1%':>10}{'avg week':>9}{'banked':>8}{'end $':>10}"]
     rows = list(wf["results"].items()) + [("BTC buy & hold", wf["btc"])]
     for name, r in rows:
         tag = " KILLED" if r.get("killed") else ""
         out.append(f"{name[:15]:<16}{r['cagr']:>+9.1%}{r['mdd']:>8.1%}{r['hit']:>5}/{r['days']:<4}"
-                   f"{r['avg']:>+9.2%}{r['banked']:>8.2f}{r['end']:>8.2f}{tag}")
-    best = max(wf["results"], key=lambda f: wf["results"][f]["sharpe"])
+                   f"{r['avg_week']:>+9.2%}{r['banked']:>8.0f}{r['end']:>10.0f}{tag}")
+    best = max(wf["results"], key=lambda f: wf["results"][f][pick])
     b, h = wf["results"][best], wf["btc"]
     last_pick = wf["schedules"][best][-1]
     stop = f"stop {last_pick[4]:g}×ATR" if last_pick[4] else "no stop-loss"
-    out.append(f"Best (risk-adjusted): {best} — latest {last_pick[2]}, "
+    out.append(f"Best ({'highest average week' if pick == 'avg_week' else 'risk-adjusted'}): {best} — latest {last_pick[2]}, "
                f"{'long+short' if last_pick[3] else 'long only'}, {stop} → paper trading this one live")
     out.append(f"vs BTC buy-and-hold: {b['cagr'] - h['cagr']:+.1%} per year, drawdown {b['mdd']:.0%} vs {h['mdd']:.0%}")
     out.append(f"Costs for best: fees ${b['fees']:.2f}, funding ${b['funding']:+.2f}, {b['trades']} positions opened")
@@ -199,12 +202,25 @@ def report(wf: dict, ms: MajorsSettings, funding_real: bool) -> list[str]:
     return out[:20]
 
 
+MODES = {
+    # safe: the desk's rules (daily +1% lock, weekly bank), 1×, best risk-adjusted strategy
+    "safe": {"leverage": 1.0, "rules": {}, "pick": "sharpe"},
+    # max: chasing 5%/week ON PAPER — 2× (hard max), no daily lock, no bank, best average week.
+    # Money limits (daily/weekly loss, kill switch) still apply.
+    "max": {"leverage": 2.0, "rules": {"day_lock_pct": 99.0, "week_bank_pct": 99.0}, "pick": "avg_week"},
+}
+
+
+def mode_settings(mode: str) -> tuple[MajorsSettings, Settings, str]:
+    m = MODES[mode]
+    return MajorsSettings(leverage=m["leverage"]), with_overrides(load_settings(), **m["rules"]), m["pick"]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--leverage", type=float, default=1.0)
+    ap.add_argument("--mode", choices=list(MODES), default="safe")
     a = ap.parse_args()
-    ms = MajorsSettings(leverage=a.leverage)
-    s = load_settings()
+    ms, s, pick = mode_settings(a.mode)
     con = data.connect(ms.db_path)
     ts_list, bars, funding, real = data.load(con, ms.symbols)
     if len(ts_list) < 24 * 365:
@@ -213,12 +229,13 @@ def main() -> None:
     prog = lambda k, n: print(f"\r  running {k}/{n}…", end="", file=sys.stderr, flush=True)  # noqa: E731
     wf = walk_forward(ts_list, bars, funding, ms, s, prog)
     print("\r" + " " * 30 + "\r", end="", file=sys.stderr)
-    lines = report(wf, ms, real)
+    lines = report(wf, ms, real, pick, a.mode)
     print("\n".join(lines))
-    best = max(wf["results"], key=lambda f: wf["results"][f]["sharpe"])
+    best = max(wf["results"], key=lambda f: wf["results"][f][pick])
     _, fam, params, sh, atr_k = wf["schedules"][best][-1]
     Path(ms.db_path).with_name("majors_choice.json").write_text(json.dumps(
-        {"family": fam, "params": list(params), "allow_short": sh, "atr_k": atr_k, "leverage": ms.leverage}, indent=1))
+        {"family": fam, "params": list(params), "allow_short": sh, "atr_k": atr_k, "leverage": ms.leverage,
+         "mode": a.mode, "rules": MODES[a.mode]["rules"]}, indent=1))
 
 
 if __name__ == "__main__":

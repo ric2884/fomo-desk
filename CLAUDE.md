@@ -22,6 +22,9 @@ Also:
   connection until a bot passes its 14-day paper gate AND we've checked which futures exchange is legal for the user. Ask first.
 - Profit rule: +1%/day is a target to measure against, never a promise. Day +1% → lock new entries. Profit is banked
   WEEKLY (week ≥ +2%), the user's choice; `bank_mode` "daily" is the old rule. Banked money is never traded.
+- Majors MAX MODE (`py -m desk.majors.backtest --mode max`, user's choice to chase 5%/week ON PAPER): 2× (hard cap),
+  no daily lock, no bank, picks the highest average week. Money limits still apply. It fails the 30% drawdown gate,
+  so it can never go to real money under current rules — say so plainly; never raise leverage above 2×.
 - Majors stop-loss is a chandelier ATR stop; the walk-forward picks off/3×/6× per strategy from earlier data only.
 - Re-tuning is walk-forward only (pick settings on earlier days, test on later ones). Never apply settings that
   weren't profitable on unseen data with ≥ 30 trades.

@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..config import ROOT, Settings, load_settings
+from ..config import ROOT, Settings, load_settings, with_overrides
 from . import data
 from .config import MajorsSettings
 from .engine import Engine
@@ -116,11 +116,17 @@ def status_text(st: dict, s: Settings | None = None) -> str:
     days = [d for d in e["days"] if d[0] >= datetime.fromtimestamp(meta["started"], timezone.utc).strftime("%Y-%m-%d")]
     hit = sum(1 for d in days if d[3])
     c = meta["choice"]
+    s = with_overrides(s, **c.get("rules", {}))
     stop = f"stop {c.get('atr_k', 0):g}×ATR" if c.get("atr_k") else "no stop-loss"
-    lines = [f"📈 MAJORS PAPER · {c['family']} {tuple(c['params'])} {'long+short' if c['allow_short'] else 'long only'}, {stop}",
+    lines = [f"📈 MAJORS PAPER{' · MAX MODE (2×, no bank)' if c.get('mode') == 'max' else ''} · {c['family']} {tuple(c['params'])} {'long+short' if c['allow_short'] else 'long only'}, {stop}",
              f"Total ${total:.2f} (start ${s.bankroll_usd:.0f}) · banked ${e['banked']:.2f}"
              + (" · KILLED" if e["killed"] else "") + (f" · today: {e['day_state']}" if e["day_state"] != "normal" else ""),
              f"Days reaching +1%: {hit} of {len(days)}"]
+    from .backtest import weekly
+    wk = weekly(days)
+    if wk:
+        lines.append(f"Weeks: avg {sum(wk) / len(wk):+.1%} · reached +5%: {sum(1 for w in wk if w >= 0.05)} of {len(wk)}"
+                     f" · this week {wk[-1]:+.1%}")
     b0, b1 = meta.get("btc_start"), e["last"].get("BTCUSDT")
     if b0 and b1:
         lines.append(f"Bot {total / s.bankroll_usd - 1:+.1%} vs BTC hold {b1 / b0 - 1:+.1%} since start")
@@ -171,6 +177,7 @@ async def run() -> None:
         print("No strategy chosen yet. Run first: py -m desk.majors.data  then  py -m desk.majors.backtest")
         return
     ms = MajorsSettings(leverage=choice.get("leverage", 1.0))
+    s = with_overrides(s, **choice.get("rules", {}))          # max mode: no lock, no bank (paper only)
     con = data.connect(ms.db_path)
     await asyncio.to_thread(data.update, con, ms)
     live = LiveMajors(ms, s, choice, con)

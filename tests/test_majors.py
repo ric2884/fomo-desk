@@ -328,3 +328,13 @@ def test_vol_breakout_enters_on_range_break_and_exits_at_day_end():
     assert sig2[-1] == 1
     assert st.update((106, 106, 106, 106), 1, 1, day2 + 23 * H) == 0      # flat at day end
     assert st.update((106, 120, 106, 120), 0, 0, day2 + 2 * H) == 0       # one entry per day
+
+
+
+def test_max_mode_keeps_money_limits_and_2x_cap():
+    ms, s, pick = mb.mode_settings("max")
+    assert ms.leverage == 2.0 and pick == "avg_week"
+    assert s.day_lock_pct > 1 and s.week_bank_pct > 1                   # no lock, no bank
+    assert s.daily_loss_limit == 8 and s.weekly_loss_limit == 20 and s.kill_switch_balance == 60
+    ms_safe, s_safe, _ = mb.mode_settings("safe")
+    assert ms_safe.leverage == 1.0 and s_safe.day_lock_pct == 0.01
